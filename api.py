@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 
 from src.store import SignalStore
 
-app = FastAPI(title="Momentum Research Agent", version="3.1.0")
+app = FastAPI(title="Momentum Research Agent", version="3.2.0")
 store = SignalStore()
 
 
@@ -15,18 +15,20 @@ def health():
         db_ok = store.ping()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_unhealthy: {exc}")
+    worker = store.worker_health(int(os.getenv("WORKER_STALE_SECONDS", "300")))
+    overall = "ok" if db_ok and worker["status"] in ("healthy", "starting") else "degraded"
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": overall,
         "mode": os.getenv("MODE", "shadow"),
         "live_execution": False,
         "database": store.backend,
-        "worker": store.get_runtime("worker_heartbeat"),
-        "last_worker_error": store.get_runtime("worker_error"),
+        "worker_health": worker,
         "pipeline": [
             "EARLY_IMPULSE_15M",
             "CONTINUATION_5M_30M",
             "OI_AND_FUNDING",
             "FUTURE_MOVE_LABELING",
+            "DAILY_RESEARCH_SNAPSHOT",
             "SHADOW_ONLY",
         ],
     }
@@ -40,3 +42,13 @@ def events(limit: int = 100):
 @app.get("/stats")
 def stats():
     return store.stats()
+
+
+@app.get("/research-status")
+def research_status():
+    return store.research_status()
+
+
+@app.get("/research-snapshots")
+def research_snapshots(limit: int = 30):
+    return store.snapshots(max(1, min(limit, 365)))
