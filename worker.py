@@ -185,7 +185,7 @@ def main():
     while True:
         try:
             result = run_once(provider, store, cfg, args.universe_limit)
-            if backfill is not None and result.get("scan_performed"):
+            if backfill is not None:
                 try:
                     backfill_result = backfill.run_batch(backfill_batch_size)
                     store.set_runtime("historical_backfill_last_batch", backfill_result)
