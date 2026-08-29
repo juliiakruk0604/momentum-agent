@@ -86,3 +86,49 @@ def test_sqlite_store_runtime_and_labels(tmp_path):
     s.upsert_impulse(imp)
     s.set_runtime("heartbeat",{"ok":True})
     assert s.get_runtime("heartbeat")["value"]["ok"] is True
+
+
+def test_research_status_tracks_oi_and_24h_labels(tmp_path):
+    from src.store import SignalStore
+    from src.models import ContinuationResult, TradeReadiness
+    p=tmp_path/"research.db"
+    store=SignalStore(path=str(p),database_url=None)
+    t=pd.Timestamp("2026-01-01T00:00:00Z")
+    imp=ImpulseSignal("EDGEUSDT",t,t+pd.Timedelta(minutes=15),100.0,97.0,3.0,0.8,10.0,1.5,90.0)
+    store.upsert_impulse(imp)
+    cont=ContinuationResult("EDGEUSDT",t,t+pd.Timedelta(minutes=45),1.2,0.8,-0.4,0.2,60.0,True,"STRONG","STRONG")
+    deriv=DerivativesSnapshot(oi_change_1h_pct=4.0,funding_rate=0.0001,source="TEST")
+    ready=TradeReadiness("EDGEUSDT",90.0,60.0,70.0,75.0,"EARLY ENTRY",[])
+    store.finalize("EDGEUSDT",t,cont,ready,deriv)
+    labels=[{
+        "symbol":"EDGEUSDT","signal_time":str(t),"horizon_minutes":1440,
+        "mfe_pct":12.0,"mae_pct":-1.0,"close_return_pct":8.0,
+        "hit_5_before_invalidation":True,"hit_10_before_invalidation":True,
+        "hit_20_before_invalidation":False,"hit_30_before_invalidation":False,
+        "time_to_mfe_minutes":300,"invalidated":False,
+    }]
+    store.update_labels("EDGEUSDT",t,labels,1440)
+    status=store.research_status()
+    assert status["dataset"]["confirmed"]==1
+    assert status["dataset"]["confirmed_oi_up"]==1
+    assert status["cohorts"]["continuation_plus_oi_up"]["p_hit_10"]==1.0
+    assert status["research_gate"]["passed"] is False
+
+
+def test_daily_snapshot_roundtrip(tmp_path):
+    from src.store import SignalStore
+    store=SignalStore(path=str(tmp_path/"snap.db"),database_url=None)
+    payload={"dataset":{"total_impulses":3},"research_gate":{"passed":False,"reasons":["small"]}}
+    store.save_daily_snapshot(payload,"2026-08-29")
+    rows=store.snapshots()
+    assert rows[0]["snapshot_date"]=="2026-08-29"
+    assert rows[0]["payload"]["dataset"]["total_impulses"]==3
+
+
+def test_worker_health_fresh_heartbeat(tmp_path):
+    from src.store import SignalStore
+    store=SignalStore(path=str(tmp_path/"health.db"),database_url=None)
+    store.set_runtime("worker_heartbeat",{"symbols":150,"scan_errors":0,"continuation_errors":0,"label_errors":0})
+    h=store.worker_health(300)
+    assert h["status"]=="healthy"
+    assert h["stale"] is False
