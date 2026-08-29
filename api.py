@@ -7,22 +7,45 @@ from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
 
-app = FastAPI(title="Momentum Research Agent", version="3.3.5")
+app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
+
+
+def _historical_backfill_errors(historical):
+    progress = (historical or {}).get("progress") or {}
+    quality = progress.get("quality") or []
+    return sum(
+        int(row.get("n") or 0)
+        for row in quality
+        if str(row.get("status") or "").lower() == "error"
+    )
 
 
 def _micro_live_readiness():
     readiness = store.micro_live_readiness()
     historical = readiness.get("historical") or store.historical_status()
+    reasons = list(readiness.get("reasons") or [])
+
     if historical.get("status") != "complete":
-        reasons = list(readiness.get("reasons") or [])
         if "historical_backfill_not_complete" not in reasons:
             reasons.append("historical_backfill_not_complete")
+
+    backfill_errors = _historical_backfill_errors(historical)
+    if backfill_errors > 0 and "historical_backfill_has_errors" not in reasons:
+        reasons.append("historical_backfill_has_errors")
+
+    if reasons != list(readiness.get("reasons") or []) or historical is not readiness.get("historical"):
         readiness = {
             **readiness,
-            "ready": False,
+            "ready": False if reasons else bool(readiness.get("ready")),
             "reasons": reasons,
             "historical": historical,
+            "historical_backfill_error_count": backfill_errors,
+        }
+    else:
+        readiness = {
+            **readiness,
+            "historical_backfill_error_count": backfill_errors,
         }
     return readiness
 
