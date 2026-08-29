@@ -7,8 +7,24 @@ from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
 
-app = FastAPI(title="Momentum Research Agent", version="3.3.4")
+app = FastAPI(title="Momentum Research Agent", version="3.3.5")
 store = SignalStore()
+
+
+def _micro_live_readiness():
+    readiness = store.micro_live_readiness()
+    historical = readiness.get("historical") or store.historical_status()
+    if historical.get("status") != "complete":
+        reasons = list(readiness.get("reasons") or [])
+        if "historical_backfill_not_complete" not in reasons:
+            reasons.append("historical_backfill_not_complete")
+        readiness = {
+            **readiness,
+            "ready": False,
+            "reasons": reasons,
+            "historical": historical,
+        }
+    return readiness
 
 
 @app.get("/health")
@@ -68,7 +84,7 @@ def historical_status():
 
 @app.get("/micro-live-readiness")
 def micro_live_readiness():
-    return store.micro_live_readiness()
+    return _micro_live_readiness()
 
 
 @app.get("/gate-status")
@@ -76,7 +92,7 @@ def gate_status(candidate_limit: int = 20):
     worker = store.worker_health(int(os.getenv("WORKER_STALE_SECONDS", "300")))
     historical = store.historical_status()
     research = store.research_status()
-    readiness = store.micro_live_readiness()
+    readiness = _micro_live_readiness()
     candidates = store.confirmed_candidates(max(1, min(candidate_limit, 100)))
     return {
         "live_execution": False,
@@ -91,7 +107,7 @@ def gate_status(candidate_limit: int = 20):
 
 @app.get("/execution-preflight")
 def execution_preflight(equity_usdt: float):
-    readiness = store.micro_live_readiness()
+    readiness = _micro_live_readiness()
     eligible = readiness.get("eligible_candidates") or []
     if not readiness.get("ready") or not eligible:
         return {
