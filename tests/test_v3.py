@@ -160,3 +160,55 @@ def test_confirmed_candidates_filters_rejected(tmp_path):
     rows=store.confirmed_candidates()
     assert len(rows)==1
     assert rows[0]["symbol"]=="X1USDT"
+
+
+def test_historical_derivatives_respects_publication_lag():
+    from src.historical_backfill import historical_derivatives
+    idx=pd.date_range("2026-01-01T00:00:00Z",periods=7,freq="15min",tz="UTC")
+    oi=pd.DataFrame({"open_interest":[100,101,102,104,106,108,120]},index=idx)
+    funding=pd.DataFrame({"funding_rate":[0.0001]},index=[idx[0]])
+    d=historical_derivatives(oi,funding,idx[-1],publication_lag_bars=1)
+    # With one publication-lag bar, 120 is unavailable; compare 108 vs 101.
+    assert round(d.oi_change_1h_pct,6)==round((108/101-1)*100,6)
+    assert d.funding_rate==0.0001
+
+
+def test_active_overlap_point_in_time():
+    from src.historical_backfill import active_overlap
+    start=pd.Timestamp("2026-06-01T00:00:00Z")
+    end=pd.Timestamp("2026-07-01T00:00:00Z")
+    active={"launchTime":int(pd.Timestamp("2026-05-01T00:00:00Z").timestamp()*1000),"deliveryTime":0}
+    future={"launchTime":int(pd.Timestamp("2026-08-01T00:00:00Z").timestamp()*1000),"deliveryTime":0}
+    ended={"launchTime":int(pd.Timestamp("2026-01-01T00:00:00Z").timestamp()*1000),"deliveryTime":int(pd.Timestamp("2026-05-01T00:00:00Z").timestamp()*1000)}
+    assert active_overlap(active,start,end) is True
+    assert active_overlap(future,start,end) is False
+    assert active_overlap(ended,start,end) is False
+
+
+def test_historical_store_and_oos_status(tmp_path):
+    from src.store import SignalStore
+    from src.models import ContinuationResult
+    store=SignalStore(path=str(tmp_path/"hist.db"),database_url=None)
+    t=pd.Timestamp("2026-06-25T00:00:00Z")
+    imp=ImpulseSignal("HISTUSDT",t,t+pd.Timedelta(minutes=15),100,97,3,0.8,10,1.5,88)
+    cont=ContinuationResult("HISTUSDT",t,t+pd.Timedelta(minutes=45),1.2,0.7,-0.5,0.1,55,True,"CONFIRMED","CONFIRMED")
+    deriv=DerivativesSnapshot(oi_change_1h_pct=3.0,funding_rate=0.0001,source="BYBIT_HISTORICAL")
+    labels=[{
+        "symbol":"HISTUSDT","signal_time":str(t),"horizon_minutes":1440,
+        "mfe_pct":11.0,"mae_pct":-1.2,"close_return_pct":7.0,
+        "hit_5_before_invalidation":True,"hit_10_before_invalidation":True,
+        "hit_20_before_invalidation":False,"hit_30_before_invalidation":False,
+        "time_to_mfe_minutes":420,"invalidated":False,
+    }]
+    state={
+        "dataset_id":"ds","start":"2026-06-01T00:00:00+00:00","end":"2026-07-01T00:00:00+00:00",
+        "cursor":1,"universe":[{"symbol":"HISTUSDT"}],"complete":True,
+        "closed_or_delivered_contracts":0,"survivorship_warning":True,
+    }
+    store.set_runtime("historical_backfill_state",state)
+    store.upsert_historical_event("ds",imp,cont,deriv,labels,0)
+    store.record_historical_symbol_run("ds","HISTUSDT","ok",1000,1,100,10,None)
+    status=store.historical_status()
+    assert status["status"]=="complete"
+    assert status["oos"]["confirmed_oi_up"]==1
+    assert status["oos"]["cohorts"]["continuation_plus_oi_up_oos"]["p_hit_10"]==1.0
