@@ -7,7 +7,7 @@ from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
 
-app = FastAPI(title="Momentum Research Agent", version="3.3.3")
+app = FastAPI(title="Momentum Research Agent", version="3.3.4")
 store = SignalStore()
 
 
@@ -69,6 +69,24 @@ def historical_status():
 @app.get("/micro-live-readiness")
 def micro_live_readiness():
     return store.micro_live_readiness()
+
+
+@app.get("/gate-status")
+def gate_status(candidate_limit: int = 20):
+    worker = store.worker_health(int(os.getenv("WORKER_STALE_SECONDS", "300")))
+    historical = store.historical_status()
+    research = store.research_status()
+    readiness = store.micro_live_readiness()
+    candidates = store.confirmed_candidates(max(1, min(candidate_limit, 100)))
+    return {
+        "live_execution": False,
+        "worker": worker,
+        "historical": historical,
+        "research_gate": research.get("research_gate"),
+        "micro_live": readiness,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+    }
 
 
 @app.get("/execution-preflight")
