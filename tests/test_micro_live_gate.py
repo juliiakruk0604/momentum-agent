@@ -46,6 +46,26 @@ def test_micro_live_blocked_when_completed_backfill_has_errors(monkeypatch):
     assert "historical_backfill_has_errors" in readiness["reasons"]
 
 
+def test_micro_live_blocked_when_completed_backfill_has_partial_runs(monkeypatch):
+    historical = {
+        "status": "complete",
+        "progress": {
+            "quality": [
+                {"status": "ok", "n": 730},
+                {"status": "empty", "n": 2},
+                {"status": "partial", "n": 1},
+            ]
+        },
+    }
+    monkeypatch.setattr(api, "store", FakeStore(historical))
+
+    readiness = api._micro_live_readiness()
+
+    assert readiness["ready"] is False
+    assert readiness["historical_backfill_partial_run_count"] == 1
+    assert "historical_backfill_has_partial_runs" in readiness["reasons"]
+
+
 def test_micro_live_preserves_ready_after_clean_historical_backfill_complete(monkeypatch):
     historical = {
         "status": "complete",
@@ -62,5 +82,7 @@ def test_micro_live_preserves_ready_after_clean_historical_backfill_complete(mon
 
     assert readiness["ready"] is True
     assert readiness["historical_backfill_error_count"] == 0
+    assert readiness["historical_backfill_partial_run_count"] == 0
     assert "historical_backfill_not_complete" not in readiness["reasons"]
     assert "historical_backfill_has_errors" not in readiness["reasons"]
+    assert "historical_backfill_has_partial_runs" not in readiness["reasons"]
