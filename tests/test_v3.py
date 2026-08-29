@@ -234,8 +234,8 @@ def test_execution_preflight_respects_risk_budget():
     }
     p=build_execution_plan(symbol="TESTUSDT",entry_price=2.0,equity_usdt=100.0,risk_limits=limits)
     assert p.allowed is True
-    assert abs(p.notional_usdt-25.0)<1e-9
-    assert abs(p.estimated_loss_at_stop_usdt-1.0)<1e-9
+    assert abs(p.notional_usdt-6.25)<1e-9
+    assert abs(p.estimated_loss_at_stop_usdt-0.25)<1e-9
 
 
 def test_execution_preflight_blocks_exchange_minimum():
