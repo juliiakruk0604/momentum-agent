@@ -96,7 +96,7 @@ def run_once(provider, store, cfg, universe_limit=100):
             cont = evaluate_continuation(imp, bars5, cfg)
             deriv = provider.derivatives_snapshot(imp.symbol)
             ready = combine_readiness(imp, cont, deriv, cfg)
-            store.finalize(imp.symbol, imp.signal_time, cont, ready)
+            store.finalize(imp.symbol, imp.signal_time, cont, ready, deriv)
             processed += 1
             if ready.state in ("EARLY ENTRY", "PAPER-WATCH"):
                 print("candidate", json.dumps({
@@ -125,6 +125,13 @@ def run_once(provider, store, cfg, universe_limit=100):
         **label_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
+    # Persist one forward-shadow research snapshot per UTC day.
+    today = pd.Timestamp.now(tz="UTC").date().isoformat()
+    last_snapshot = store.get_runtime("research_snapshot_date")
+    if last_snapshot is None or last_snapshot.get("value") != today:
+        snapshot = store.research_status()
+        store.save_daily_snapshot(snapshot, today)
+        store.set_runtime("research_snapshot_date", today)
     return summary
 
 
