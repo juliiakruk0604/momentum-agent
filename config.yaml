@@ -1,0 +1,67 @@
+mode: research
+impulse:
+  base_window_bars_15m: 48
+  volume_window_bars_15m: 20
+  rs_window_bars_15m: 16
+  max_move_from_base_pct: 5.0
+  min_breakout_pct: 0.5
+  min_volume_ratio: 5.0
+  min_relative_strength_pct: 1.0
+  cooldown_bars_15m: 4
+continuation:
+  observation_minutes: 30
+  min_followthrough_return_pct: 0.5
+  max_adverse_excursion_pct: 1.5
+  strong_min_followthrough_return_pct: 1.0
+  strong_max_adverse_excursion_pct: 1.0
+  min_progress_efficiency: 0.1
+derivatives:
+  oi_required_for_live_candidate: true
+  min_oi_change_1h_pct: 2.0
+  max_abs_funding_rate: 0.0015
+  liquidation_filter_enabled: true
+  coinglass_enabled: false
+  research_oi_thresholds_pct:
+  - 0.0
+  - 2.0
+  - 5.0
+  - 10.0
+labeling:
+  horizons_minutes:
+  - 60
+  - 180
+  - 360
+  - 720
+  - 1440
+  targets_pct:
+  - 5
+  - 10
+  - 20
+  - 30
+  invalidation_pct: 4.0
+execution:
+  enabled: false
+  engine: hummingbot_mcp
+  paper_only: true
+  risk_per_trade_pct: 1.0
+  max_open_positions: 1
+  daily_drawdown_limit_pct: 3.0
+  max_consecutive_losses: 2
+  hard_stop_pct: 4.0
+research:
+  use_point_in_time_universe: true
+  statuses:
+  - Trading
+  - Settling
+  - Closed
+  signal_interval: '15'
+  continuation_interval: '5'
+  future_label_interval: '15'
+  history_days: 90
+  max_symbols: null
+  candidate_5m_fetch_only: true
+  publication_lag_bars: 1
+walk_forward:
+  train_days: 21
+  test_days: 7
+  step_days: 7
