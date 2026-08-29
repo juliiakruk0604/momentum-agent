@@ -21,6 +21,16 @@ def _historical_backfill_errors(historical):
     )
 
 
+def _historical_backfill_partial_runs(historical):
+    progress = (historical or {}).get("progress") or {}
+    quality = progress.get("quality") or []
+    return sum(
+        int(row.get("n") or 0)
+        for row in quality
+        if str(row.get("status") or "").lower() == "partial"
+    )
+
+
 def _micro_live_readiness():
     readiness = store.micro_live_readiness()
     historical = readiness.get("historical") or store.historical_status()
@@ -34,6 +44,10 @@ def _micro_live_readiness():
     if backfill_errors > 0 and "historical_backfill_has_errors" not in reasons:
         reasons.append("historical_backfill_has_errors")
 
+    partial_runs = _historical_backfill_partial_runs(historical)
+    if partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
+        reasons.append("historical_backfill_has_partial_runs")
+
     if reasons != list(readiness.get("reasons") or []) or historical is not readiness.get("historical"):
         readiness = {
             **readiness,
@@ -41,11 +55,13 @@ def _micro_live_readiness():
             "reasons": reasons,
             "historical": historical,
             "historical_backfill_error_count": backfill_errors,
+            "historical_backfill_partial_run_count": partial_runs,
         }
     else:
         readiness = {
             **readiness,
             "historical_backfill_error_count": backfill_errors,
+            "historical_backfill_partial_run_count": partial_runs,
         }
     return readiness
 
