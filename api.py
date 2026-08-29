@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, HTTPException
 
 from src.store import SignalStore
+from src.execution.preflight import build_execution_plan
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.1")
 store = SignalStore()
@@ -67,3 +68,31 @@ def historical_status():
 @app.get("/micro-live-readiness")
 def micro_live_readiness():
     return store.micro_live_readiness()
+
+
+@app.get("/execution-preflight")
+def execution_preflight(equity_usdt: float, min_notional_usdt: float | None = None, qty_step: float | None = None):
+    readiness = store.micro_live_readiness()
+    eligible = readiness.get("eligible_candidates") or []
+    if not readiness.get("ready") or not eligible:
+        return {
+            "ready": False,
+            "reason": "micro_live_gate_not_ready",
+            "readiness": readiness,
+            "plan": None,
+        }
+    candidate = eligible[0]
+    plan = build_execution_plan(
+        symbol=candidate["symbol"],
+        entry_price=float(candidate["signal_price"]),
+        equity_usdt=equity_usdt,
+        risk_limits=readiness["risk_limits"],
+        min_notional_usdt=min_notional_usdt,
+        qty_step=qty_step,
+    )
+    return {
+        "ready": bool(plan.allowed),
+        "candidate": candidate,
+        "plan": plan.to_dict(),
+        "execution_enabled": False,
+    }
