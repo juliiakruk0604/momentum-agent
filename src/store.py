@@ -45,6 +45,33 @@ CREATE TABLE IF NOT EXISTS research_snapshots(
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS historical_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dataset_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  signal_time TEXT NOT NULL,
+  available_time TEXT NOT NULL,
+  signal_price REAL NOT NULL,
+  impulse_json TEXT NOT NULL,
+  continuation_json TEXT,
+  derivatives_json TEXT,
+  labels_json TEXT,
+  fold_id INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(dataset_id, symbol, signal_time)
+);
+CREATE TABLE IF NOT EXISTS historical_symbol_runs(
+  dataset_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  status TEXT NOT NULL,
+  bars15 INTEGER DEFAULT 0,
+  impulses INTEGER DEFAULT 0,
+  oi_rows INTEGER DEFAULT 0,
+  funding_rows INTEGER DEFAULT 0,
+  error TEXT,
+  processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(dataset_id, symbol)
+);
 '''
 
 POSTGRES_SCHEMA = '''
@@ -77,6 +104,36 @@ CREATE TABLE IF NOT EXISTS research_snapshots(
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS historical_events(
+  id BIGSERIAL PRIMARY KEY,
+  dataset_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  signal_time TEXT NOT NULL,
+  available_time TEXT NOT NULL,
+  signal_price DOUBLE PRECISION NOT NULL,
+  impulse_json TEXT NOT NULL,
+  continuation_json TEXT,
+  derivatives_json TEXT,
+  labels_json TEXT,
+  fold_id INTEGER,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(dataset_id, symbol, signal_time)
+);
+CREATE TABLE IF NOT EXISTS historical_symbol_runs(
+  dataset_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  status TEXT NOT NULL,
+  bars15 INTEGER DEFAULT 0,
+  impulses INTEGER DEFAULT 0,
+  oi_rows INTEGER DEFAULT 0,
+  funding_rows INTEGER DEFAULT 0,
+  error TEXT,
+  processed_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY(dataset_id, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_historical_events_dataset ON historical_events(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_historical_events_fold ON historical_events(dataset_id,fold_id);
+CREATE INDEX IF NOT EXISTS idx_historical_symbol_runs_dataset ON historical_symbol_runs(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_events_state ON events(state);
 CREATE INDEX IF NOT EXISTS idx_events_available_time ON events(available_time);
 CREATE INDEX IF NOT EXISTS idx_events_last_labeled_horizon ON events(last_labeled_horizon);
@@ -472,6 +529,165 @@ class SignalStore:
                 "payload": _loads(row["payload"]),
             })
         return out
+
+    def upsert_historical_event(self, dataset_id, imp, cont, deriv, labels, fold_id):
+        params = (
+            dataset_id,
+            imp.symbol,
+            str(imp.signal_time),
+            str(imp.available_time),
+            float(imp.signal_price),
+            json.dumps(asdict(imp), default=str),
+            json.dumps(asdict(cont), default=str),
+            json.dumps(asdict(deriv), default=str),
+            json.dumps(labels, default=str),
+            None if fold_id is None else int(fold_id),
+        )
+        self._execute(
+            '''INSERT OR IGNORE INTO historical_events(
+                 dataset_id,symbol,signal_time,available_time,signal_price,
+                 impulse_json,continuation_json,derivatives_json,labels_json,fold_id
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+            '''INSERT INTO historical_events(
+                 dataset_id,symbol,signal_time,available_time,signal_price,
+                 impulse_json,continuation_json,derivatives_json,labels_json,fold_id
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT(dataset_id,symbol,signal_time) DO UPDATE SET
+                 continuation_json=EXCLUDED.continuation_json,
+                 derivatives_json=EXCLUDED.derivatives_json,
+                 labels_json=EXCLUDED.labels_json,
+                 fold_id=EXCLUDED.fold_id''',
+            params,
+        )
+
+    def record_historical_symbol_run(
+        self, dataset_id, symbol, status, bars15, impulses, oi_rows, funding_rows, error
+    ):
+        params = (
+            dataset_id, symbol, status, int(bars15), int(impulses),
+            int(oi_rows), int(funding_rows), error,
+        )
+        self._execute(
+            '''INSERT INTO historical_symbol_runs(
+                 dataset_id,symbol,status,bars15,impulses,oi_rows,funding_rows,error,processed_at
+               ) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(dataset_id,symbol) DO UPDATE SET
+                 status=excluded.status,bars15=excluded.bars15,impulses=excluded.impulses,
+                 oi_rows=excluded.oi_rows,funding_rows=excluded.funding_rows,error=excluded.error,
+                 processed_at=CURRENT_TIMESTAMP''',
+            '''INSERT INTO historical_symbol_runs(
+                 dataset_id,symbol,status,bars15,impulses,oi_rows,funding_rows,error,processed_at
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+               ON CONFLICT(dataset_id,symbol) DO UPDATE SET
+                 status=EXCLUDED.status,bars15=EXCLUDED.bars15,impulses=EXCLUDED.impulses,
+                 oi_rows=EXCLUDED.oi_rows,funding_rows=EXCLUDED.funding_rows,error=EXCLUDED.error,
+                 processed_at=NOW()''',
+            params,
+        )
+
+    def _historical_rows(self, dataset_id):
+        return self._execute(
+            '''SELECT * FROM historical_events WHERE dataset_id=? ORDER BY signal_time''',
+            '''SELECT * FROM historical_events WHERE dataset_id=%s ORDER BY signal_time''',
+            (dataset_id,), fetch="all",
+        )
+
+    def historical_status(self, dataset_id=None):
+        state_row = self.get_runtime("historical_backfill_state")
+        state = None if state_row is None else state_row.get("value")
+        if dataset_id is None:
+            dataset_id = None if not state else state.get("dataset_id")
+        if not dataset_id:
+            return {
+                "status": "not_started",
+                "dataset_id": None,
+                "progress": None,
+                "oos": None,
+            }
+
+        rows = self._historical_rows(dataset_id)
+        oos = [r for r in rows if r.get("fold_id") is not None]
+        confirmed = []
+        strong = []
+        oi_up = []
+        oi_2 = []
+        for row in oos:
+            cont = _loads(row.get("continuation_json")) or {}
+            deriv = _loads(row.get("derivatives_json")) or {}
+            is_confirmed = bool(cont.get("confirmed"))
+            if is_confirmed:
+                confirmed.append(row)
+            if cont.get("tier") == "STRONG":
+                strong.append(row)
+            oi = deriv.get("oi_change_1h_pct")
+            if is_confirmed and oi is not None:
+                try:
+                    oi_value = float(oi)
+                    if oi_value > 0:
+                        oi_up.append(row)
+                    if oi_value >= 2.0:
+                        oi_2.append(row)
+                except (TypeError, ValueError):
+                    pass
+
+        cohorts = {
+            "impulse_oos": self._cohort_metrics(oos),
+            "continuation_confirmed_oos": self._cohort_metrics(confirmed),
+            "continuation_strong_oos": self._cohort_metrics(strong),
+            "continuation_plus_oi_up_oos": self._cohort_metrics(oi_up),
+            "continuation_plus_oi_2pct_oos": self._cohort_metrics(oi_2),
+        }
+
+        quality = self._execute(
+            '''SELECT status,COUNT(*) AS n FROM historical_symbol_runs
+               WHERE dataset_id=? GROUP BY status ORDER BY n DESC''',
+            '''SELECT status,COUNT(*) AS n FROM historical_symbol_runs
+               WHERE dataset_id=%s GROUP BY status ORDER BY n DESC''',
+            (dataset_id,), fetch="all",
+        )
+        processed = sum(int(r["n"]) for r in quality)
+        universe_size = len((state or {}).get("universe") or []) if state and state.get("dataset_id") == dataset_id else None
+        cursor = int((state or {}).get("cursor") or 0) if state and state.get("dataset_id") == dataset_id else processed
+
+        imp = cohorts["impulse_oos"]
+        con = cohorts["continuation_confirmed_oos"]
+        oi = cohorts["continuation_plus_oi_up_oos"]
+        reasons = []
+        if imp["n_24h"] < 100:
+            reasons.append("need_at_least_100_oos_impulses")
+        if con["n_24h"] < 30:
+            reasons.append("need_at_least_30_oos_confirmed")
+        if oi["n_24h"] < 20:
+            reasons.append("need_at_least_20_oos_confirmed_with_oi_up")
+        if imp["n_24h"] >= 100 and con["n_24h"] >= 30:
+            if (con["p_hit_10"] or 0) <= (imp["p_hit_10"] or 0):
+                reasons.append("continuation_does_not_improve_p10")
+            if con["invalidation_rate"] is not None and con["invalidation_rate"] > 0.40:
+                reasons.append("confirmed_invalidation_rate_above_40pct")
+
+        return {
+            "status": "complete" if state and state.get("complete") else "running",
+            "dataset_id": dataset_id,
+            "window": None if not state else {"start": state.get("start"), "end": state.get("end")},
+            "progress": {
+                "cursor": cursor,
+                "universe_size": universe_size,
+                "processed_symbols": processed,
+                "remaining_symbols": None if universe_size is None else max(0, universe_size - cursor),
+                "quality": quality,
+                "closed_or_delivered_contracts": None if not state else state.get("closed_or_delivered_contracts"),
+                "survivorship_warning": None if not state else state.get("survivorship_warning"),
+            },
+            "oos": {
+                "signals_total": len(oos),
+                "confirmed": len(confirmed),
+                "strong": len(strong),
+                "confirmed_oi_up": len(oi_up),
+                "confirmed_oi_2pct": len(oi_2),
+                "cohorts": cohorts,
+                "research_gate": {"passed": len(reasons) == 0, "reasons": reasons},
+            },
+        }
 
     def ping(self):
         with self._conn() as c:
