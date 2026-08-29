@@ -31,6 +31,21 @@ def _historical_backfill_partial_runs(historical):
     )
 
 
+def _historical_backfill_legacy_partial_runs(historical):
+    dataset_id = (historical or {}).get("dataset_id")
+    if not dataset_id or not hasattr(store, "_execute"):
+        return 0
+    row = store._execute(
+        '''SELECT COUNT(*) AS n FROM historical_symbol_runs
+           WHERE dataset_id=? AND status='ok' AND error LIKE 'exact5_errors=%' ''',
+        '''SELECT COUNT(*) AS n FROM historical_symbol_runs
+           WHERE dataset_id=%s AND status='ok' AND error LIKE 'exact5_errors=%%' ''',
+        (dataset_id,),
+        fetch="one",
+    )
+    return int((row or {}).get("n") or 0)
+
+
 def _micro_live_readiness():
     readiness = store.micro_live_readiness()
     historical = readiness.get("historical") or store.historical_status()
@@ -45,7 +60,9 @@ def _micro_live_readiness():
         reasons.append("historical_backfill_has_errors")
 
     partial_runs = _historical_backfill_partial_runs(historical)
-    if partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
+    legacy_partial_runs = _historical_backfill_legacy_partial_runs(historical)
+    total_partial_runs = partial_runs + legacy_partial_runs
+    if total_partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
         reasons.append("historical_backfill_has_partial_runs")
 
     if reasons != list(readiness.get("reasons") or []) or historical is not readiness.get("historical"):
@@ -55,13 +72,15 @@ def _micro_live_readiness():
             "reasons": reasons,
             "historical": historical,
             "historical_backfill_error_count": backfill_errors,
-            "historical_backfill_partial_run_count": partial_runs,
+            "historical_backfill_partial_run_count": total_partial_runs,
+            "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
         }
     else:
         readiness = {
             **readiness,
             "historical_backfill_error_count": backfill_errors,
-            "historical_backfill_partial_run_count": partial_runs,
+            "historical_backfill_partial_run_count": total_partial_runs,
+            "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
         }
     return readiness
 
