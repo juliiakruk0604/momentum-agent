@@ -689,6 +689,91 @@ class SignalStore:
             },
         }
 
+    def micro_live_readiness(self):
+        hist = self.historical_status()
+        reasons = []
+        if hist.get("status") == "not_started" or not hist.get("oos"):
+            reasons.append("historical_oos_not_available")
+            cohorts = {}
+        else:
+            cohorts = hist["oos"].get("cohorts") or {}
+            imp = cohorts.get("impulse_oos") or {}
+            con = cohorts.get("continuation_confirmed_oos") or {}
+            oi = cohorts.get("continuation_plus_oi_up_oos") or {}
+
+            if int(imp.get("n_24h") or 0) < 50:
+                reasons.append("need_50_completed_oos_impulses")
+            if int(con.get("n_24h") or 0) < 12:
+                reasons.append("need_12_completed_confirmed")
+            if int(oi.get("n_24h") or 0) < 8:
+                reasons.append("need_8_completed_confirmed_oi_up")
+
+            ip10 = imp.get("p_hit_10")
+            cp10 = con.get("p_hit_10")
+            if ip10 is None or cp10 is None or cp10 <= ip10:
+                reasons.append("continuation_must_improve_p10")
+            inv = con.get("invalidation_rate")
+            if inv is None or inv > 0.40:
+                reasons.append("confirmed_invalidation_must_be_at_most_40pct")
+
+        worker = self.worker_health(int(os.getenv("WORKER_STALE_SECONDS", "300")))
+        if worker.get("status") not in ("healthy",):
+            reasons.append("worker_not_healthy")
+
+        candidates = self.confirmed_candidates(limit=25)
+        now = _utc_now()
+        eligible = []
+        for c in candidates:
+            readiness = c.get("readiness") or {}
+            derivatives = c.get("derivatives") or {}
+            signal_time = _parse_utc(c.get("signal_time"))
+            age_min = None if signal_time is None else (now - signal_time).total_seconds() / 60.0
+            if readiness.get("state") != "EARLY ENTRY":
+                continue
+            if age_min is None or age_min > 90:
+                continue
+            oi_change = derivatives.get("oi_change_1h_pct")
+            funding = derivatives.get("funding_rate")
+            if oi_change is None or float(oi_change) < 2.0:
+                continue
+            if funding is not None and abs(float(funding)) > 0.0015:
+                continue
+            eligible.append({
+                "symbol": c.get("symbol"),
+                "signal_time": c.get("signal_time"),
+                "signal_price": c.get("signal_price"),
+                "state": readiness.get("state"),
+                "oi_change_1h_pct": oi_change,
+                "funding_rate": funding,
+                "age_minutes": round(age_min, 1),
+            })
+
+        if not eligible:
+            reasons.append("no_fresh_live_early_entry_candidate")
+
+        return {
+            "mode": "micro_live_execution_validation",
+            "provisional_only": True,
+            "full_research_gate_passed": bool(
+                (hist.get("oos") or {}).get("research_gate", {}).get("passed", False)
+            ) if hist.get("oos") else False,
+            "ready": len(reasons) == 0,
+            "reasons": reasons,
+            "risk_limits": {
+                "max_trades_today": 1,
+                "max_notional_fraction_of_equity": 0.25,
+                "hard_stop_pct": 4.0,
+                "target_risk_fraction_of_equity": 0.01,
+                "max_daily_loss_usdt": 0.25,
+                "max_leverage": 1,
+                "averaging": False,
+                "martingale": False,
+                "require_exchange_min_order_within_risk_budget": True,
+            },
+            "historical": hist,
+            "eligible_candidates": eligible,
+        }
+
     def ping(self):
         with self._conn() as c:
             cur = c.cursor()
