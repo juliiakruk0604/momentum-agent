@@ -4,16 +4,58 @@ from ..models import DerivativesSnapshot
 
 class BybitPublicProvider:
     BASE="https://api.bybit.com"
-    def __init__(self,timeout=15,pause=0.08):
-        self.timeout=timeout; self.pause=pause
+    def __init__(self,timeout=15,pause=0.08,max_retries=4,backoff_base=0.5):
+        self.timeout=timeout
+        self.pause=pause
+        self.max_retries=max(0,int(max_retries))
+        self.backoff_base=max(0.0,float(backoff_base))
+
+    def _retry_delay(self,attempt,response=None):
+        delay=self.backoff_base*(2**attempt)
+        if response is not None:
+            reset_ms=response.headers.get("X-Bapi-Limit-Reset-Timestamp")
+            if reset_ms:
+                try:
+                    reset_delay=float(reset_ms)/1000.0-time.time()
+                    delay=max(delay,reset_delay)
+                except (TypeError,ValueError):
+                    pass
+        return max(self.pause,delay,0.0)
+
     def _get(self,path,params):
-        r=requests.get(self.BASE+path,params=params,timeout=self.timeout)
-        r.raise_for_status()
-        p=r.json()
-        if p.get("retCode")!=0:
-            raise RuntimeError(f"{p.get('retCode')}: {p.get('retMsg')}")
-        time.sleep(self.pause)
-        return p["result"]
+        last_exc=None
+        for attempt in range(self.max_retries+1):
+            try:
+                r=requests.get(self.BASE+path,params=params,timeout=self.timeout)
+            except requests.RequestException as exc:
+                last_exc=exc
+                if attempt>=self.max_retries:
+                    raise
+                time.sleep(self._retry_delay(attempt))
+                continue
+
+            if r.status_code==429 or 500<=r.status_code<600:
+                if attempt>=self.max_retries:
+                    r.raise_for_status()
+                time.sleep(self._retry_delay(attempt,r))
+                continue
+
+            r.raise_for_status()
+            p=r.json()
+            code=p.get("retCode")
+            if code==10006:
+                if attempt>=self.max_retries:
+                    raise RuntimeError(f"{code}: {p.get('retMsg')}")
+                time.sleep(self._retry_delay(attempt,r))
+                continue
+            if code!=0:
+                raise RuntimeError(f"{code}: {p.get('retMsg')}")
+            time.sleep(self.pause)
+            return p["result"]
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Bybit request failed after retries")
 
     def kline(self,symbol,interval,limit=200,end_ms=None,start_ms=None):
         params={"category":"linear","symbol":symbol,"interval":interval,"limit":limit}
