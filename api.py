@@ -5,8 +5,9 @@ from fastapi import FastAPI, HTTPException
 
 from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
+from src.execution.exchange_constraints import bybit_linear_constraints
 
-app = FastAPI(title="Momentum Research Agent", version="3.3.1")
+app = FastAPI(title="Momentum Research Agent", version="3.3.3")
 store = SignalStore()
 
 
@@ -71,7 +72,7 @@ def micro_live_readiness():
 
 
 @app.get("/execution-preflight")
-def execution_preflight(equity_usdt: float, min_notional_usdt: float | None = None, qty_step: float | None = None):
+def execution_preflight(equity_usdt: float):
     readiness = store.micro_live_readiness()
     eligible = readiness.get("eligible_candidates") or []
     if not readiness.get("ready") or not eligible:
@@ -81,18 +82,42 @@ def execution_preflight(equity_usdt: float, min_notional_usdt: float | None = No
             "readiness": readiness,
             "plan": None,
         }
+
     candidate = eligible[0]
+    try:
+        constraints = bybit_linear_constraints(candidate["symbol"])
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": "exchange_constraints_unavailable",
+            "error": repr(exc),
+            "candidate": candidate,
+            "plan": None,
+            "execution_enabled": False,
+        }
+
+    if constraints.get("status") != "Trading":
+        return {
+            "ready": False,
+            "reason": "instrument_not_trading",
+            "candidate": candidate,
+            "exchange_constraints": constraints,
+            "plan": None,
+            "execution_enabled": False,
+        }
+
     plan = build_execution_plan(
         symbol=candidate["symbol"],
         entry_price=float(candidate["signal_price"]),
         equity_usdt=equity_usdt,
         risk_limits=readiness["risk_limits"],
-        min_notional_usdt=min_notional_usdt,
-        qty_step=qty_step,
+        min_notional_usdt=constraints.get("min_notional_usdt"),
+        qty_step=constraints.get("qty_step"),
     )
     return {
         "ready": bool(plan.allowed),
         "candidate": candidate,
+        "exchange_constraints": constraints,
         "plan": plan.to_dict(),
         "execution_enabled": False,
     }
