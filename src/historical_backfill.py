@@ -219,10 +219,11 @@ class HistoricalBackfillRunner:
             )
             stored += 1
 
+        run_status = "ok" if exact5_errors == 0 else "partial"
         self.store.record_historical_symbol_run(
             state["dataset_id"],
             symbol,
-            "ok",
+            run_status,
             int(len(bars15)),
             int(stored),
             int(len(oi)),
@@ -231,7 +232,7 @@ class HistoricalBackfillRunner:
         )
         return {
             "symbol": symbol,
-            "status": "ok",
+            "status": run_status,
             "bars15": int(len(bars15)),
             "impulses": int(stored),
             "oi_rows": int(len(oi)),
