@@ -139,3 +139,27 @@ def test_micro_live_preserves_ready_after_clean_historical_backfill_complete(mon
     assert "historical_backfill_has_errors" not in readiness["reasons"]
     assert "historical_backfill_has_partial_runs" not in readiness["reasons"]
     assert "historical_backfill_has_empty_runs" not in readiness["reasons"]
+
+
+def test_historical_oos_gate_fails_closed_until_backfill_is_clean_and_complete(monkeypatch):
+    historical = {
+        "status": "running",
+        "dataset_id": "oos-test",
+        "progress": {
+            "quality": [
+                {"status": "ok", "n": 420},
+                {"status": "empty", "n": 1},
+            ]
+        },
+        "oos": {
+            "research_gate": {"passed": True, "reasons": []},
+        },
+    }
+    monkeypatch.setattr(api, "store", FakeStore(historical))
+
+    guarded = api._historical_status_with_integrity_gate()
+
+    assert guarded["oos"]["research_gate"]["passed"] is False
+    assert "historical_backfill_not_complete" in guarded["oos"]["research_gate"]["reasons"]
+    assert "historical_backfill_has_empty_runs" in guarded["oos"]["research_gate"]["reasons"]
+    assert guarded["integrity"]["backfill_empty_run_count"] == 1
