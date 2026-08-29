@@ -212,3 +212,12 @@ def test_historical_store_and_oos_status(tmp_path):
     assert status["status"]=="complete"
     assert status["oos"]["confirmed_oi_up"]==1
     assert status["oos"]["cohorts"]["continuation_plus_oi_up_oos"]["p_hit_10"]==1.0
+
+
+def test_micro_live_readiness_stays_false_on_small_sample(tmp_path):
+    from src.store import SignalStore
+    store=SignalStore(path=str(tmp_path/"micro.db"),database_url=None)
+    r=store.micro_live_readiness()
+    assert r["ready"] is False
+    assert r["provisional_only"] is True
+    assert "historical_oos_not_available" in r["reasons"]
