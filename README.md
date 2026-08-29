@@ -24,14 +24,18 @@ Research-only crypto momentum scanner and dataset builder.
 ## Railway deployment
 
 1. Deploy this GitHub repository as a Railway service.
-2. Add Railway PostgreSQL to the same project. Railway injects `DATABASE_URL` automatically.
-3. Add variables:
+2. Add Railway PostgreSQL to the same project.
+3. In the application service, add a reference variable:
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+   - If your database service has a different name, replace `Postgres` with that exact Railway service name.
+4. Add application variables:
    - `MODE=shadow`
    - `SERVICE_MODE=all`
    - `UNIVERSE_LIMIT=150`
    - `WORKER_SLEEP_SECONDS=60`
-4. Deploy.
-5. Open `/health` and verify:
+5. Deploy or redeploy.
+6. Generate a public domain for the application service and open `/health`.
+7. Verify:
    - `status = ok`
    - `database = postgres`
    - a recent `worker` heartbeat appears after the first scan.
