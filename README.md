@@ -80,3 +80,28 @@ The worker performs the expensive 150-symbol market scan only once per new 15m c
 - \`GET /candidates?limit=50\` — recent continuation-confirmed forward-shadow candidates with derivatives context.
 - \`scan_performed\` in \`/health\` heartbeat shows whether the current loop included a full market scan.
 - \`last_market_scan_symbols\` confirms the active universe size even on lightweight loops.
+
+
+## v3.3 autonomous historical OOS backfill
+
+The live shadow worker now also builds a separate historical OOS dataset incrementally, without a second Railway service.
+
+Defaults:
+- \`HISTORICAL_BACKFILL_ENABLED=true\`
+- \`HISTORICAL_BACKFILL_DAYS=60\`
+- \`HISTORICAL_HOLDOUT_DAYS=10\`
+- \`HISTORICAL_BACKFILL_SYMBOLS_PER_SCAN=1\`
+
+The first dataset intentionally ends 10 days before the current time. That keeps the late-August examples used to formulate v3.1 out of the initial autonomous validation window.
+
+Each new 15m market bucket processes one historical contract:
+1. point-in-time eligible Bybit USDT linear perpetual universe, including Closed/Settling when exposed by the venue;
+2. historical 15m OHLCV;
+3. exact 5m continuation only around detected impulses;
+4. historical 15m open interest with publication lag;
+5. historical funding;
+6. 1h/3h/6h/12h/24h future labels;
+7. rolling walk-forward test-fold assignment;
+8. persistent PostgreSQL storage and resumable cursor.
+
+Use \`GET /historical-status\` for progress and OOS cohort metrics. The historical research gate remains closed until it has at least 100 OOS impulses, 30 confirmed continuations, and 20 confirmed continuations with OI rising.
