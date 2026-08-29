@@ -31,6 +31,16 @@ def _historical_backfill_partial_runs(historical):
     )
 
 
+def _historical_backfill_empty_runs(historical):
+    progress = (historical or {}).get("progress") or {}
+    quality = progress.get("quality") or []
+    return sum(
+        int(row.get("n") or 0)
+        for row in quality
+        if str(row.get("status") or "").lower() == "empty"
+    )
+
+
 def _historical_backfill_legacy_partial_runs(historical):
     dataset_id = (historical or {}).get("dataset_id")
     if not dataset_id or not hasattr(store, "_execute"):
@@ -65,6 +75,10 @@ def _micro_live_readiness():
     if total_partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
         reasons.append("historical_backfill_has_partial_runs")
 
+    empty_runs = _historical_backfill_empty_runs(historical)
+    if empty_runs > 0 and "historical_backfill_has_empty_runs" not in reasons:
+        reasons.append("historical_backfill_has_empty_runs")
+
     if reasons != list(readiness.get("reasons") or []) or historical is not readiness.get("historical"):
         readiness = {
             **readiness,
@@ -74,6 +88,7 @@ def _micro_live_readiness():
             "historical_backfill_error_count": backfill_errors,
             "historical_backfill_partial_run_count": total_partial_runs,
             "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
+            "historical_backfill_empty_run_count": empty_runs,
         }
     else:
         readiness = {
@@ -81,6 +96,7 @@ def _micro_live_readiness():
             "historical_backfill_error_count": backfill_errors,
             "historical_backfill_partial_run_count": total_partial_runs,
             "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
+            "historical_backfill_empty_run_count": empty_runs,
         }
     return readiness
 
