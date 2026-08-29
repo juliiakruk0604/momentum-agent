@@ -84,6 +84,7 @@ def run_once(provider, store, cfg, universe_limit=100):
         btc = provider.kline("BTCUSDT", "15", 200)
         eth = provider.kline("ETHUSDT", "15", 200)
         symbols = provider.liquid_usdt_symbols(limit=universe_limit)
+        failed_symbols = []
         for symbol in symbols:
             try:
                 bars = provider.kline(symbol, "15", 200)
@@ -94,14 +95,34 @@ def run_once(provider, store, cfg, universe_limit=100):
                         store.upsert_impulse(newest)
                         new_count += 1
             except Exception as exc:
-                scan_errors += 1
+                failed_symbols.append(symbol)
                 print("scan_error", symbol, repr(exc), flush=True)
+
+        retry_failures = []
+        for symbol in failed_symbols:
+            try:
+                bars = provider.kline(symbol, "15", 200)
+                impulses = compute_impulse_candidates(symbol, bars, btc, eth, cfg)
+                if impulses:
+                    newest = impulses[-1]
+                    if pd.Timestamp.now(tz="UTC") - newest.available_time <= pd.Timedelta(minutes=45):
+                        store.upsert_impulse(newest)
+                        new_count += 1
+                print("scan_retry_recovered", symbol, flush=True)
+            except Exception as exc:
+                retry_failures.append(symbol)
+                print("scan_retry_error", symbol, repr(exc), flush=True)
+
+        scan_errors = len(retry_failures)
         store.set_runtime("market_scan_bucket", bucket)
         store.set_runtime("market_scan_summary", {
             "bucket": bucket,
             "symbols": len(symbols),
             "new_impulses": new_count,
+            "initial_scan_errors": len(failed_symbols),
             "scan_errors": scan_errors,
+            "retry_recovered": len(failed_symbols) - scan_errors,
+            "failed_symbols": retry_failures,
             "finished_at": str(pd.Timestamp.now(tz="UTC")),
         })
 
