@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 
 from src.store import SignalStore
 
-app = FastAPI(title="Momentum Research Agent", version="3.3.0")
+app = FastAPI(title="Momentum Research Agent", version="3.3.1")
 store = SignalStore()
 
 
@@ -62,3 +62,8 @@ def candidates(limit: int = 50):
 @app.get("/historical-status")
 def historical_status():
     return store.historical_status()
+
+
+@app.get("/micro-live-readiness")
+def micro_live_readiness():
+    return store.micro_live_readiness()
