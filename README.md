@@ -71,3 +71,12 @@ The service now stores the raw Bybit derivatives snapshot with each finalized ev
 - \`WORKER_STALE_SECONDS=300\` — default watchdog threshold.
 
 The forward-shadow gate remains closed until at least 100 completed 24h impulses, 30 confirmed continuations and 20 confirmed continuations with OI rising are collected.
+
+
+## v3.2.1 runtime efficiency
+
+The worker performs the expensive 150-symbol market scan only once per new 15m candle. Between market scans it still wakes every minute to process due continuation checks and future labels, and it updates the health heartbeat each loop.
+
+- \`GET /candidates?limit=50\` — recent continuation-confirmed forward-shadow candidates with derivatives context.
+- \`scan_performed\` in \`/health\` heartbeat shows whether the current loop included a full market scan.
+- \`last_market_scan_symbols\` confirms the active universe size even on lightweight loops.
