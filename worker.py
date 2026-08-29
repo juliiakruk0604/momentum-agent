@@ -11,6 +11,7 @@ import pandas as pd
 import yaml
 
 from src.continuation import evaluate_continuation
+from src.historical_backfill import HistoricalBackfillRunner
 from src.impulse import compute_impulse_candidates
 from src.labeling import label_future_moves
 from src.models import ImpulseSignal
@@ -178,9 +179,24 @@ def main():
     cfg = load_cfg()
     provider = BybitPublicProvider()
     store = SignalStore()
+    historical_backfill_enabled = os.getenv("HISTORICAL_BACKFILL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    backfill = HistoricalBackfillRunner(provider, store, cfg) if historical_backfill_enabled else None
+    backfill_batch_size = max(1, int(os.getenv("HISTORICAL_BACKFILL_SYMBOLS_PER_SCAN", "1")))
     while True:
         try:
             result = run_once(provider, store, cfg, args.universe_limit)
+            if backfill is not None and result.get("scan_performed"):
+                try:
+                    backfill_result = backfill.run_batch(backfill_batch_size)
+                    store.set_runtime("historical_backfill_last_batch", backfill_result)
+                    store.set_runtime("historical_backfill_error", None)
+                    print("historical_backfill", json.dumps(backfill_result, default=str), flush=True)
+                except Exception as backfill_exc:
+                    store.set_runtime(
+                        "historical_backfill_error",
+                        {"time": str(pd.Timestamp.now(tz="UTC")), "error": repr(backfill_exc)},
+                    )
+                    print("historical_backfill_error", repr(backfill_exc), flush=True)
             store.set_runtime("worker_error", None)
             print(result, flush=True)
         except Exception as exc:
