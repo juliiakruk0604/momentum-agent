@@ -56,6 +56,48 @@ def _historical_backfill_legacy_partial_runs(historical):
     return int((row or {}).get("n") or 0)
 
 
+def _historical_status_with_integrity_gate(historical=None):
+    historical = historical or store.historical_status()
+    oos = historical.get("oos")
+    if not oos:
+        return historical
+
+    base_gate = oos.get("research_gate") or {}
+    reasons = list(base_gate.get("reasons") or [])
+    if historical.get("status") != "complete" and "historical_backfill_not_complete" not in reasons:
+        reasons.append("historical_backfill_not_complete")
+
+    backfill_errors = _historical_backfill_errors(historical)
+    partial_runs = _historical_backfill_partial_runs(historical)
+    legacy_partial_runs = _historical_backfill_legacy_partial_runs(historical)
+    empty_runs = _historical_backfill_empty_runs(historical)
+
+    if backfill_errors > 0 and "historical_backfill_has_errors" not in reasons:
+        reasons.append("historical_backfill_has_errors")
+    if partial_runs + legacy_partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
+        reasons.append("historical_backfill_has_partial_runs")
+    if empty_runs > 0 and "historical_backfill_has_empty_runs" not in reasons:
+        reasons.append("historical_backfill_has_empty_runs")
+
+    return {
+        **historical,
+        "oos": {
+            **oos,
+            "research_gate": {
+                **base_gate,
+                "passed": len(reasons) == 0,
+                "reasons": reasons,
+            },
+        },
+        "integrity": {
+            "backfill_error_count": backfill_errors,
+            "backfill_partial_run_count": partial_runs + legacy_partial_runs,
+            "backfill_legacy_partial_run_count": legacy_partial_runs,
+            "backfill_empty_run_count": empty_runs,
+        },
+    }
+
+
 def _micro_live_readiness():
     readiness = store.micro_live_readiness()
     historical = readiness.get("historical") or store.historical_status()
@@ -153,7 +195,7 @@ def candidates(limit: int = 50):
 
 @app.get("/historical-status")
 def historical_status():
-    return store.historical_status()
+    return _historical_status_with_integrity_gate()
 
 
 @app.get("/micro-live-readiness")
@@ -164,7 +206,7 @@ def micro_live_readiness():
 @app.get("/gate-status")
 def gate_status(candidate_limit: int = 20):
     worker = store.worker_health(int(os.getenv("WORKER_STALE_SECONDS", "300")))
-    historical = store.historical_status()
+    historical = _historical_status_with_integrity_gate()
     research = store.research_status()
     readiness = _micro_live_readiness()
     candidates = store.confirmed_candidates(max(1, min(candidate_limit, 100)))
