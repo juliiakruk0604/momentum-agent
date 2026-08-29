@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import asdict
 import pandas as pd
@@ -12,6 +14,11 @@ from .models import DerivativesSnapshot
 
 def _ms(ts):
     return int(pd.Timestamp(ts).timestamp() * 1000)
+
+
+def _config_fingerprint(cfg):
+    payload = json.dumps(cfg, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def active_overlap(meta, start, end):
@@ -78,12 +85,7 @@ def historical_derivatives(oi, funding, available_time, publication_lag_bars=1):
 
 
 class HistoricalBackfillRunner:
-    """Incremental point-in-time OOS dataset builder.
-
-    It intentionally uses a holdout gap before "now", so the first autonomous
-    backfill does not validate on the late-August examples that were used to
-    formulate v3.1 continuation rules.
-    """
+    """Incremental point-in-time OOS dataset builder."""
 
     STATE_KEY = "historical_backfill_state"
 
@@ -116,7 +118,8 @@ class HistoricalBackfillRunner:
             1 for m in universe
             if str(m.get("status")) == "Closed" or int(m.get("deliveryTime") or 0) > 0
         )
-        dataset_id = f"bybit_oos_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_v321"
+        fingerprint = _config_fingerprint(self.cfg)
+        dataset_id = f"bybit_oos_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_v321_{fingerprint}"
         state = {
             "dataset_id": dataset_id,
             "start": start.isoformat(),
@@ -133,6 +136,8 @@ class HistoricalBackfillRunner:
             ],
             "closed_or_delivered_contracts": closed_or_delivered,
             "survivorship_warning": closed_or_delivered == 0,
+            "config_fingerprint": fingerprint,
+            "config_mismatch": False,
             "complete": len(universe) == 0,
             "created_at": now.isoformat(),
         }
@@ -146,7 +151,26 @@ class HistoricalBackfillRunner:
     def ensure_state(self, now=None):
         state = self.state()
         if not state:
-            state = self._new_state(now)
+            return self._new_state(now)
+
+        fingerprint = _config_fingerprint(self.cfg)
+        pinned = state.get("config_fingerprint")
+        if not pinned:
+            state["config_fingerprint"] = fingerprint
+            state["config_fingerprint_pinned_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+            state["config_mismatch"] = False
+            self.store.set_runtime(self.STATE_KEY, state)
+            return state
+
+        mismatch = pinned != fingerprint
+        state["config_mismatch"] = mismatch
+        if mismatch:
+            state["observed_config_fingerprint"] = fingerprint
+            state["complete"] = False
+            state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+            self.store.set_runtime(self.STATE_KEY, state)
+        else:
+            state.pop("observed_config_fingerprint", None)
         return state
 
     def _benchmarks(self, state):
@@ -177,10 +201,7 @@ class HistoricalBackfillRunner:
             return {"symbol": symbol, "status": "empty", "impulses": 0}
 
         impulses = compute_impulse_candidates(symbol, bars15, btc, eth, self.cfg)
-        impulses = [
-            imp for imp in impulses
-            if start <= imp.signal_time < end
-        ]
+        impulses = [imp for imp in impulses if start <= imp.signal_time < end]
 
         oi = self.provider.open_interest_range(symbol, _ms(warmup), _ms(end), "15min")
         funding = self.provider.funding_history_range(symbol, _ms(warmup), _ms(end))
@@ -193,9 +214,7 @@ class HistoricalBackfillRunner:
                 cont_end = imp.available_time + pd.Timedelta(
                     minutes=int(self.cfg["continuation"]["observation_minutes"]) + 10
                 )
-                bars5 = self.provider.kline_range(
-                    symbol, "5", _ms(imp.available_time), _ms(cont_end)
-                )
+                bars5 = self.provider.kline_range(symbol, "5", _ms(imp.available_time), _ms(cont_end))
                 cont = evaluate_continuation(imp, bars5, self.cfg)
             except Exception:
                 exact5_errors += 1
@@ -210,12 +229,7 @@ class HistoricalBackfillRunner:
             labels = label_future_moves(imp, bars15, self.cfg)
             fold_id = fold_for(imp.available_time, folds)
             self.store.upsert_historical_event(
-                state["dataset_id"],
-                imp,
-                cont,
-                deriv,
-                [asdict(x) for x in labels],
-                fold_id,
+                state["dataset_id"], imp, cont, deriv, [asdict(x) for x in labels], fold_id
             )
             stored += 1
 
@@ -286,6 +300,19 @@ class HistoricalBackfillRunner:
         cursor = int(state.get("cursor") or 0)
         batch_size = max(1, int(batch_size))
 
+        if state.get("config_mismatch"):
+            return {
+                "dataset_id": state["dataset_id"],
+                "complete": False,
+                "primary_complete": cursor >= len(universe),
+                "cursor": cursor,
+                "universe_size": len(universe),
+                "processed": [],
+                "config_mismatch": True,
+                "config_fingerprint": state.get("config_fingerprint"),
+                "observed_config_fingerprint": state.get("observed_config_fingerprint"),
+            }
+
         if cursor < len(universe):
             processed = []
             for _ in range(batch_size):
@@ -334,11 +361,7 @@ class HistoricalBackfillRunner:
                 continue
             self._clear_symbol_events(state["dataset_id"], symbol)
             result = self._run_symbol(state, meta)
-            processed.append({
-                **result,
-                "retry": True,
-                "attempt": retry_attempts[symbol],
-            })
+            processed.append({**result, "retry": True, "attempt": retry_attempts[symbol]})
 
         remaining_problem_rows = self._problem_runs(state["dataset_id"])
         retryable_remaining = [
