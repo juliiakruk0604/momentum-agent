@@ -221,3 +221,32 @@ def test_micro_live_readiness_stays_false_on_small_sample(tmp_path):
     assert r["ready"] is False
     assert r["provisional_only"] is True
     assert "historical_oos_not_available" in r["reasons"]
+
+
+def test_execution_preflight_respects_risk_budget():
+    from src.execution.preflight import build_execution_plan
+    limits={
+        "hard_stop_pct":4.0,
+        "target_risk_fraction_of_equity":0.01,
+        "max_notional_fraction_of_equity":0.25,
+        "max_daily_loss_usdt":0.25,
+        "max_leverage":1,
+    }
+    p=build_execution_plan(symbol="TESTUSDT",entry_price=2.0,equity_usdt=100.0,risk_limits=limits)
+    assert p.allowed is True
+    assert abs(p.notional_usdt-25.0)<1e-9
+    assert abs(p.estimated_loss_at_stop_usdt-1.0)<1e-9
+
+
+def test_execution_preflight_blocks_exchange_minimum():
+    from src.execution.preflight import build_execution_plan
+    limits={
+        "hard_stop_pct":4.0,
+        "target_risk_fraction_of_equity":0.01,
+        "max_notional_fraction_of_equity":0.25,
+        "max_daily_loss_usdt":0.25,
+        "max_leverage":1,
+    }
+    p=build_execution_plan(symbol="TESTUSDT",entry_price=2.0,equity_usdt=10.0,risk_limits=limits,min_notional_usdt=5.0)
+    assert p.allowed is False
+    assert "exchange_min_order_exceeds_risk_budget" in p.blockers
