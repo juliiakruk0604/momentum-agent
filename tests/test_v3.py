@@ -132,3 +132,31 @@ def test_worker_health_fresh_heartbeat(tmp_path):
     h=store.worker_health(300)
     assert h["status"]=="healthy"
     assert h["stale"] is False
+
+
+def test_market_scan_bucket_only_once_per_15m(tmp_path):
+    from src.store import SignalStore
+    from worker import _should_scan_market, _market_bucket
+    store=SignalStore(path=str(tmp_path/"bucket.db"),database_url=None)
+    now=pd.Timestamp("2026-08-29T06:07:00Z")
+    assert _should_scan_market(store,now) is True
+    store.set_runtime("market_scan_bucket",_market_bucket(now))
+    assert _should_scan_market(store,pd.Timestamp("2026-08-29T06:14:59Z")) is False
+    assert _should_scan_market(store,pd.Timestamp("2026-08-29T06:15:01Z")) is True
+
+
+def test_confirmed_candidates_filters_rejected(tmp_path):
+    from src.store import SignalStore
+    from src.models import ContinuationResult, TradeReadiness
+    store=SignalStore(path=str(tmp_path/"cand.db"),database_url=None)
+    t=pd.Timestamp("2026-01-01T00:00:00Z")
+    for i,confirmed in enumerate([False,True]):
+        tt=t+pd.Timedelta(hours=i)
+        imp=ImpulseSignal(f"X{i}USDT",tt,tt+pd.Timedelta(minutes=15),100,97,3,0.8,10,1.5,85)
+        store.upsert_impulse(imp)
+        cont=ContinuationResult(imp.symbol,tt,tt+pd.Timedelta(minutes=45),1 if confirmed else -1,0.5,-0.5,0.1,50,confirmed,"CONFIRMED" if confirmed else "weak","CONFIRMED" if confirmed else "REJECTED")
+        ready=TradeReadiness(imp.symbol,85,50,None,60,"PAPER-WATCH" if confirmed else "WAIT",[])
+        store.finalize(imp.symbol,tt,cont,ready,DerivativesSnapshot())
+    rows=store.confirmed_candidates()
+    assert len(rows)==1
+    assert rows[0]["symbol"]=="X1USDT"
