@@ -256,6 +256,13 @@ class HistoricalBackfillRunner:
             fetch="all",
         )
 
+    def _clear_symbol_events(self, dataset_id, symbol):
+        self.store._execute(
+            "DELETE FROM historical_events WHERE dataset_id=? AND symbol=?",
+            "DELETE FROM historical_events WHERE dataset_id=%s AND symbol=%s",
+            (dataset_id, symbol),
+        )
+
     @staticmethod
     def _meta_for_symbol(universe, symbol):
         for meta in universe:
@@ -325,6 +332,7 @@ class HistoricalBackfillRunner:
                     "error": "symbol_not_in_backfill_universe",
                 })
                 continue
+            self._clear_symbol_events(state["dataset_id"], symbol)
             result = self._run_symbol(state, meta)
             processed.append({
                 **result,
