@@ -101,6 +101,7 @@ def _historical_status_with_integrity_gate(historical=None):
 def _micro_live_readiness():
     readiness = store.micro_live_readiness()
     historical = readiness.get("historical") or store.historical_status()
+    historical = _historical_status_with_integrity_gate(historical)
     reasons = list(readiness.get("reasons") or [])
 
     if historical.get("status") != "complete":
@@ -120,6 +121,11 @@ def _micro_live_readiness():
     empty_runs = _historical_backfill_empty_runs(historical)
     if empty_runs > 0 and "historical_backfill_has_empty_runs" not in reasons:
         reasons.append("historical_backfill_has_empty_runs")
+
+    historical_research_gate = ((historical.get("oos") or {}).get("research_gate") or {})
+    if historical.get("oos") and not historical_research_gate.get("passed", False):
+        if "historical_research_gate_not_passed" not in reasons:
+            reasons.append("historical_research_gate_not_passed")
 
     if reasons != list(readiness.get("reasons") or []) or historical is not readiness.get("historical"):
         readiness = {
