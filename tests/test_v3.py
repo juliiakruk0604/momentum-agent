@@ -1,0 +1,88 @@
+from pathlib import Path
+import pandas as pd
+import yaml
+from src.models import ImpulseSignal, DerivativesSnapshot
+from src.continuation import evaluate_continuation
+from src.readiness import combine_readiness
+from src.labeling import label_future_moves
+
+ROOT=Path(__file__).resolve().parents[1]
+CFG=yaml.safe_load((ROOT/"config.yaml").read_text())
+
+def load(sym):
+    x=pd.read_csv(ROOT/"tests/fixtures"/f"{sym}_5m.csv",parse_dates=["time"]).set_index("time")
+    x.index=pd.to_datetime(x.index,utc=True)
+    return x
+
+def sig(sym,signal_time,price,impulse=85):
+    t=pd.Timestamp(signal_time)
+    if t.tzinfo is None: t=t.tz_localize("UTC")
+    return ImpulseSignal(sym,t,t+pd.Timedelta(minutes=15),price,price/1.03,3,0.8,10,1.5,impulse)
+
+def test_real_dexe_continuation_confirms():
+    r=evaluate_continuation(sig("DEXEUSDT","2026-08-28T11:00:00Z",1.945),load("DEXEUSDT"),CFG)
+    assert r.confirmed and r.followthrough_return_pct > 2.5
+
+def test_real_profitable_sui_continuation_confirms():
+    r=evaluate_continuation(sig("SUIUSDT","2026-08-20T08:30:00Z",0.7221),load("SUIUSDT"),CFG)
+    assert r.confirmed and r.followthrough_return_pct > 0.5
+
+def test_real_sol_false_impulse_rejected():
+    r=evaluate_continuation(sig("SOLUSDT","2026-08-23T00:30:00Z",96.33),load("SOLUSDT"),CFG)
+    assert not r.confirmed
+
+def test_real_doge_false_impulse_rejected():
+    r=evaluate_continuation(sig("DOGEUSDT","2026-08-25T00:30:00Z",0.09115),load("DOGEUSDT"),CFG)
+    assert not r.confirmed
+
+def test_missing_oi_never_live():
+    s=sig("DEXEUSDT","2026-08-28T11:00:00Z",1.945)
+    c=evaluate_continuation(s,load("DEXEUSDT"),CFG)
+    r=combine_readiness(s,c,DerivativesSnapshot(),CFG)
+    assert r.state=="PAPER-WATCH" and "live_requires_oi" in r.blockers
+
+def test_good_derivatives_promote():
+    s=sig("DEXEUSDT","2026-08-28T11:00:00Z",1.945,95)
+    c=evaluate_continuation(s,load("DEXEUSDT"),CFG)
+    d=DerivativesSnapshot(oi_change_1h_pct=8.0,funding_rate=0.0001,taker_buy_sell_ratio=1.4,
+                          short_liquidation_usd_1h=1_000_000,long_liquidation_usd_1h=250_000,source="TEST")
+    assert combine_readiness(s,c,d,CFG).state=="EARLY ENTRY"
+
+def test_future_label_stops_after_invalidation():
+    s=sig("TEST","2026-01-01T00:00:00Z",100)
+    idx=pd.date_range(s.available_time,periods=120,freq="1min",tz="UTC")
+    x=pd.DataFrame({"open":100.0,"high":100.5,"low":99.5,"close":100.0,"volume":1.0},index=idx)
+    x.iloc[5,x.columns.get_loc("low")]=95.0
+    x.iloc[50,x.columns.get_loc("high")]=140.0
+    labels=label_future_moves(s,x,CFG)
+    assert not labels[-1].hit_20_before_invalidation and labels[-1].invalidated
+
+def test_vet_runner_case_confirms_strong():
+    r=evaluate_continuation(sig("VETUSDT","2026-08-26T16:15:00Z",0.005726),load("VETUSDT"),CFG)
+    assert r.confirmed and r.tier=="STRONG" and r.followthrough_return_pct > 1.5
+
+def test_pyth_confirms_without_score_veto():
+    r=evaluate_continuation(sig("PYTHUSDT","2026-08-25T00:00:00Z",0.05014),load("PYTHUSDT"),CFG)
+    assert r.confirmed and r.followthrough_return_pct > 0.9
+
+def test_pendle_confirms():
+    r=evaluate_continuation(sig("PENDLEUSDT","2026-08-27T08:00:00Z",1.771),load("PENDLEUSDT"),CFG)
+    assert r.confirmed and r.followthrough_return_pct > 0.8
+
+def test_future_label_uses_wall_clock():
+    s=sig("TEST","2026-01-01T00:00:00Z",100)
+    idx=pd.date_range(s.available_time,periods=20,freq="15min",tz="UTC")
+    x=pd.DataFrame({"open":100.0,"high":101.0,"low":99.5,"close":100.5,"volume":1.0},index=idx)
+    one_hour=next(z for z in label_future_moves(s,x,CFG) if z.horizon_minutes==60)
+    assert one_hour.time_to_mfe_minutes <= 45
+    assert abs(one_hour.close_return_pct-0.5) < 1e-9
+
+def test_sqlite_store_runtime_and_labels(tmp_path):
+    from src.store import SignalStore
+    p=tmp_path/"test.db"
+    s=SignalStore(path=str(p),database_url=None)
+    t=pd.Timestamp("2026-01-01T00:00:00Z")
+    imp=ImpulseSignal("TESTUSDT",t,t+pd.Timedelta(minutes=15),1.0,0.97,3.0,0.5,7.0,1.2,80.0)
+    s.upsert_impulse(imp)
+    s.set_runtime("heartbeat",{"ok":True})
+    assert s.get_runtime("heartbeat")["value"]["ok"] is True
