@@ -35,6 +35,16 @@ def _ms(ts):
     return int(pd.Timestamp(ts).timestamp() * 1000)
 
 
+def _store_impulse_if_new(store, impulse):
+    for row in store.recent(limit=250):
+        if row.get("symbol") != impulse.symbol:
+            continue
+        if pd.Timestamp(row.get("signal_time")) == pd.Timestamp(impulse.signal_time):
+            return False
+    store.upsert_impulse(impulse)
+    return True
+
+
 def process_labels(provider, store, cfg, now):
     horizons = sorted(int(x) for x in cfg["labeling"]["horizons_minutes"])
     done = 0
@@ -92,8 +102,8 @@ def run_once(provider, store, cfg, universe_limit=100):
                 if impulses:
                     newest = impulses[-1]
                     if pd.Timestamp.now(tz="UTC") - newest.available_time <= pd.Timedelta(minutes=45):
-                        store.upsert_impulse(newest)
-                        new_count += 1
+                        if _store_impulse_if_new(store, newest):
+                            new_count += 1
             except Exception as exc:
                 failed_symbols.append(symbol)
                 print("scan_error", symbol, repr(exc), flush=True)
@@ -106,8 +116,8 @@ def run_once(provider, store, cfg, universe_limit=100):
                 if impulses:
                     newest = impulses[-1]
                     if pd.Timestamp.now(tz="UTC") - newest.available_time <= pd.Timedelta(minutes=45):
-                        store.upsert_impulse(newest)
-                        new_count += 1
+                        if _store_impulse_if_new(store, newest):
+                            new_count += 1
                 print("scan_retry_recovered", symbol, flush=True)
             except Exception as exc:
                 retry_failures.append(symbol)
