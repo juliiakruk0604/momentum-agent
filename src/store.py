@@ -432,6 +432,32 @@ class SignalStore:
         )
         return date_value
 
+    def confirmed_candidates(self, limit: int = 50):
+        rows = self._execute(
+            "SELECT * FROM events WHERE continuation_json IS NOT NULL ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM events WHERE continuation_json IS NOT NULL ORDER BY id DESC LIMIT %s",
+            (max(int(limit) * 5, 100),), fetch="all",
+        )
+        out = []
+        for row in rows:
+            cont = _loads(row.get("continuation_json")) or {}
+            if not bool(cont.get("confirmed")):
+                continue
+            out.append({
+                "id": row.get("id"),
+                "symbol": row.get("symbol"),
+                "signal_time": row.get("signal_time"),
+                "signal_price": row.get("signal_price"),
+                "state": row.get("state"),
+                "continuation": cont,
+                "derivatives": _loads(row.get("derivatives_json")),
+                "readiness": _loads(row.get("readiness_json")),
+                "last_labeled_horizon": row.get("last_labeled_horizon"),
+            })
+            if len(out) >= int(limit):
+                break
+        return out
+
     def snapshots(self, limit: int = 30):
         rows = self._execute(
             "SELECT snapshot_date,payload,updated_at FROM research_snapshots ORDER BY snapshot_date DESC LIMIT ?",
