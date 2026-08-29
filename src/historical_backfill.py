@@ -240,45 +240,117 @@ class HistoricalBackfillRunner:
             "exact5_errors": exact5_errors,
         }
 
+    def _problem_runs(self, dataset_id):
+        return self.store._execute(
+            '''SELECT symbol,status,error FROM historical_symbol_runs
+               WHERE dataset_id=? AND (
+                 status IN ('empty','partial','error')
+                 OR (status='ok' AND error LIKE 'exact5_errors=%')
+               ) ORDER BY symbol''',
+            '''SELECT symbol,status,error FROM historical_symbol_runs
+               WHERE dataset_id=%s AND (
+                 status IN ('empty','partial','error')
+                 OR (status='ok' AND error LIKE 'exact5_errors=%%')
+               ) ORDER BY symbol''',
+            (dataset_id,),
+            fetch="all",
+        )
+
+    @staticmethod
+    def _meta_for_symbol(universe, symbol):
+        for meta in universe:
+            if meta.get("symbol") == symbol:
+                return meta
+        return None
+
+    def _run_symbol(self, state, meta):
+        symbol = meta["symbol"]
+        try:
+            return self._process_symbol(state, meta)
+        except Exception as exc:
+            self.store.record_historical_symbol_run(
+                state["dataset_id"], symbol, "error", 0, 0, 0, 0, repr(exc)
+            )
+            return {"symbol": symbol, "status": "error", "error": repr(exc)}
+
     def run_batch(self, batch_size=1):
         state = self.ensure_state()
         universe = state.get("universe") or []
         cursor = int(state.get("cursor") or 0)
-        if state.get("complete") or cursor >= len(universe):
-            state["complete"] = True
-            self.store.set_runtime(self.STATE_KEY, state)
+        batch_size = max(1, int(batch_size))
+
+        if cursor < len(universe):
+            processed = []
+            for _ in range(batch_size):
+                if cursor >= len(universe):
+                    break
+                meta = universe[cursor]
+                processed.append(self._run_symbol(state, meta))
+                cursor += 1
+                state["cursor"] = cursor
+                state["primary_complete"] = cursor >= len(universe)
+                state["complete"] = False
+                state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+                self.store.set_runtime(self.STATE_KEY, state)
+
             return {
                 "dataset_id": state["dataset_id"],
-                "complete": True,
+                "complete": False,
+                "primary_complete": cursor >= len(universe),
                 "cursor": cursor,
                 "universe_size": len(universe),
-                "processed": [],
+                "processed": processed,
             }
 
+        state["primary_complete"] = True
+        retry_attempts = dict(state.get("retry_attempts") or {})
+        max_retry_attempts = max(1, int(os.getenv("HISTORICAL_BACKFILL_RETRY_ATTEMPTS", "2")))
+        problem_rows = self._problem_runs(state["dataset_id"])
+        retryable = [
+            row for row in problem_rows
+            if int(retry_attempts.get(row["symbol"], 0)) < max_retry_attempts
+        ]
         processed = []
-        for _ in range(max(1, int(batch_size))):
-            if cursor >= len(universe):
-                break
-            meta = universe[cursor]
-            symbol = meta["symbol"]
-            try:
-                result = self._process_symbol(state, meta)
-            except Exception as exc:
-                self.store.record_historical_symbol_run(
-                    state["dataset_id"], symbol, "error", 0, 0, 0, 0, repr(exc)
-                )
-                result = {"symbol": symbol, "status": "error", "error": repr(exc)}
-            processed.append(result)
-            cursor += 1
-            state["cursor"] = cursor
-            state["complete"] = cursor >= len(universe)
-            state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
-            self.store.set_runtime(self.STATE_KEY, state)
+
+        for row in retryable[:batch_size]:
+            symbol = row["symbol"]
+            meta = self._meta_for_symbol(universe, symbol)
+            retry_attempts[symbol] = int(retry_attempts.get(symbol, 0)) + 1
+            if meta is None:
+                processed.append({
+                    "symbol": symbol,
+                    "status": "error",
+                    "retry": True,
+                    "attempt": retry_attempts[symbol],
+                    "error": "symbol_not_in_backfill_universe",
+                })
+                continue
+            result = self._run_symbol(state, meta)
+            processed.append({
+                **result,
+                "retry": True,
+                "attempt": retry_attempts[symbol],
+            })
+
+        remaining_problem_rows = self._problem_runs(state["dataset_id"])
+        retryable_remaining = [
+            row for row in remaining_problem_rows
+            if int(retry_attempts.get(row["symbol"], 0)) < max_retry_attempts
+        ]
+        unresolved = [row["symbol"] for row in remaining_problem_rows]
+        state["retry_attempts"] = retry_attempts
+        state["unresolved_retry_symbols"] = unresolved
+        state["complete"] = len(retryable_remaining) == 0
+        state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+        self.store.set_runtime(self.STATE_KEY, state)
 
         return {
             "dataset_id": state["dataset_id"],
             "complete": state["complete"],
+            "primary_complete": True,
             "cursor": cursor,
             "universe_size": len(universe),
             "processed": processed,
+            "retry_remaining": len(retryable_remaining),
+            "unresolved_retry_symbols": unresolved,
         }
