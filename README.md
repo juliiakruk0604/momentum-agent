@@ -59,3 +59,15 @@ The research runner compares Impulse, Continuation, and Continuation + OI cohort
 ## Current research status
 
 The exact 5m validation set is still too small to establish a tradable edge. Live execution remains disabled until historical + shadow + paper gates pass.
+
+
+## v3.2 forward-shadow observability
+
+The service now stores the raw Bybit derivatives snapshot with each finalized event and exposes live research cohorts.
+
+- \`GET /research-status\` — Impulse / Confirmed / Strong / Confirmed+OI cohort sizes, 24h hit rates, MFE/MAE, invalidation rate, uplift and the research gate.
+- \`GET /research-snapshots?limit=30\` — one longitudinal research snapshot per UTC day.
+- \`GET /health\` — database state plus worker freshness, cycle errors and last worker error.
+- \`WORKER_STALE_SECONDS=300\` — default watchdog threshold.
+
+The forward-shadow gate remains closed until at least 100 completed 24h impulses, 30 confirmed continuations and 20 confirmed continuations with OI rising are collected.
