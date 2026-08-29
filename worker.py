@@ -60,26 +60,52 @@ def process_labels(provider, store, cfg, now):
     return {"labeled": done, "label_errors": errors}
 
 
+def _market_bucket(now):
+    return pd.Timestamp(now).floor("15min").isoformat()
+
+
+def _should_scan_market(store, now):
+    bucket = _market_bucket(now)
+    last = store.get_runtime("market_scan_bucket")
+    return last is None or last.get("value") != bucket
+
+
 def run_once(provider, store, cfg, universe_limit=100):
     started = pd.Timestamp.now(tz="UTC")
-    btc = provider.kline("BTCUSDT", "15", 200)
-    eth = provider.kline("ETHUSDT", "15", 200)
-    symbols = provider.liquid_usdt_symbols(limit=universe_limit)
+    now = started
+    bucket = _market_bucket(now)
+    scan_performed = _should_scan_market(store, now)
+    symbols = []
     new_count = 0
     scan_errors = 0
 
-    for symbol in symbols:
-        try:
-            bars = provider.kline(symbol, "15", 200)
-            impulses = compute_impulse_candidates(symbol, bars, btc, eth, cfg)
-            if impulses:
-                newest = impulses[-1]
-                if pd.Timestamp.now(tz="UTC") - newest.available_time <= pd.Timedelta(minutes=45):
-                    store.upsert_impulse(newest)
-                    new_count += 1
-        except Exception as exc:
-            scan_errors += 1
-            print("scan_error", symbol, repr(exc), flush=True)
+    if scan_performed:
+        btc = provider.kline("BTCUSDT", "15", 200)
+        eth = provider.kline("ETHUSDT", "15", 200)
+        symbols = provider.liquid_usdt_symbols(limit=universe_limit)
+        for symbol in symbols:
+            try:
+                bars = provider.kline(symbol, "15", 200)
+                impulses = compute_impulse_candidates(symbol, bars, btc, eth, cfg)
+                if impulses:
+                    newest = impulses[-1]
+                    if pd.Timestamp.now(tz="UTC") - newest.available_time <= pd.Timedelta(minutes=45):
+                        store.upsert_impulse(newest)
+                        new_count += 1
+            except Exception as exc:
+                scan_errors += 1
+                print("scan_error", symbol, repr(exc), flush=True)
+        store.set_runtime("market_scan_bucket", bucket)
+        store.set_runtime("market_scan_summary", {
+            "bucket": bucket,
+            "symbols": len(symbols),
+            "new_impulses": new_count,
+            "scan_errors": scan_errors,
+            "finished_at": str(pd.Timestamp.now(tz="UTC")),
+        })
+
+    previous_scan = store.get_runtime("market_scan_summary")
+    last_market_symbols = int(((previous_scan or {}).get("value") or {}).get("symbols") or len(symbols))
 
     processed = 0
     continuation_errors = 0
@@ -98,17 +124,23 @@ def run_once(provider, store, cfg, universe_limit=100):
             ready = combine_readiness(imp, cont, deriv, cfg)
             store.finalize(imp.symbol, imp.signal_time, cont, ready, deriv)
             processed += 1
-            if ready.state in ("EARLY ENTRY", "PAPER-WATCH"):
-                print("candidate", json.dumps({
-                    "symbol": imp.symbol,
-                    "state": ready.state,
-                    "tier": cont.tier,
-                    "followthrough_30m_pct": round(cont.followthrough_return_pct, 3),
-                    "mae_30m_pct": round(cont.mae_pct, 3),
-                    "oi_change_1h_pct": deriv.oi_change_1h_pct,
-                    "funding_rate": deriv.funding_rate,
-                    "blockers": ready.blockers,
-                }), flush=True)
+            if ready.state in ("EARLY ENTRY", "PAPER-WATCH") or cont.confirmed:
+                print(
+                    "candidate",
+                    json.dumps(
+                        {
+                            "symbol": imp.symbol,
+                            "state": ready.state,
+                            "tier": cont.tier,
+                            "followthrough_30m_pct": round(cont.followthrough_return_pct, 3),
+                            "mae_30m_pct": round(cont.mae_pct, 3),
+                            "oi_change_1h_pct": deriv.oi_change_1h_pct,
+                            "funding_rate": deriv.funding_rate,
+                            "blockers": ready.blockers,
+                        }
+                    ),
+                    flush=True,
+                )
         except Exception as exc:
             continuation_errors += 1
             print("continuation_error", imp.symbol, repr(exc), flush=True)
@@ -117,7 +149,10 @@ def run_once(provider, store, cfg, universe_limit=100):
     summary = {
         "started_at": str(started),
         "finished_at": str(pd.Timestamp.now(tz="UTC")),
-        "symbols": len(symbols),
+        "market_bucket": bucket,
+        "scan_performed": scan_performed,
+        "symbols_scanned": len(symbols),
+        "last_market_scan_symbols": last_market_symbols,
         "new_impulses": new_count,
         "processed_continuations": processed,
         "scan_errors": scan_errors,
@@ -125,7 +160,6 @@ def run_once(provider, store, cfg, universe_limit=100):
         **label_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
-    # Persist one forward-shadow research snapshot per UTC day.
     today = pd.Timestamp.now(tz="UTC").date().isoformat()
     last_snapshot = store.get_runtime("research_snapshot_date")
     if last_snapshot is None or last_snapshot.get("value") != today:
@@ -146,7 +180,9 @@ def main():
     store = SignalStore()
     while True:
         try:
-            print(run_once(provider, store, cfg, args.universe_limit), flush=True)
+            result = run_once(provider, store, cfg, args.universe_limit)
+            store.set_runtime("worker_error", None)
+            print(result, flush=True)
         except Exception as exc:
             store.set_runtime("worker_error", {"time": str(pd.Timestamp.now(tz="UTC")), "error": repr(exc)})
             print("worker_error", repr(exc), flush=True)
