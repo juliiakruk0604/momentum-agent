@@ -90,7 +90,10 @@ def evaluate_v22_readiness(store):
     # Therefore the fast trigger must earn its evidence through forward shadow data.
     warnings.append("historical_orderflow_parity_unavailable_forward_shadow_required")
 
-    account = _row_value(store, "promo_account_snapshot") or {}
+    account = _row_value(store, "promo_account_snapshot")
+    if not isinstance(account, dict):
+        reasons.append("api_permission_snapshot_missing")
+        account = {}
     forbidden = account.get("forbidden_permissions") or {}
     if forbidden.get("withdraw"):
         reasons.append("api_withdraw_permission_present")
