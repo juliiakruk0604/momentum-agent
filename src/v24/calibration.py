@@ -61,6 +61,21 @@ FEATURES = {
     "binance_buy_ratio_5s": ("cross_exchange", "high", lambda s: _nested(s, "cross_exchange", "binance_trade_5s", "buy_ratio")),
     "okx_buy_ratio_1s": ("cross_exchange", "high", lambda s: _nested(s, "cross_exchange", "okx_trade_1s", "buy_ratio")),
     "okx_buy_ratio_5s": ("cross_exchange", "high", lambda s: _nested(s, "cross_exchange", "okx_trade_5s", "buy_ratio")),
+
+    # Multi-second temporal persistence. Evidence-only until validated.
+    "score_delta_1s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "score_delta_1s")),
+    "score_delta_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "score_delta_3s")),
+    "score_mean_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "score_mean_3s")),
+    "score_min_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "score_min_3s")),
+    "score_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "score_persistence_3s")),
+    "buy_ratio_mean_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "buy_ratio_mean_3s")),
+    "buy_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "buy_persistence_3s")),
+    "book_imbalance_mean_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "book_imbalance_mean_3s")),
+    "ask_depletion_mean_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "ask_depletion_mean_3s")),
+    "external_lead_mean_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "external_lead_mean_3s")),
+    "external_positive_lead_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "external_positive_lead_persistence_3s")),
+    "cross_exchange_agreement_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "cross_exchange_agreement_persistence_3s")),
+    "oi_change_mean_5s_pct": ("sequence", "high", lambda s: _nested(s, "sequence_context", "oi_change_mean_5s_pct")),
 }
 
 
@@ -281,7 +296,7 @@ def calibrate_horizon(store, horizon_seconds):
     rules.sort(key=lambda x: (bool(x["robust"]), float(x["score"])), reverse=True)
 
     grouped = {}
-    for group in ("microstructure", "perp", "cross_exchange"):
+    for group in ("microstructure", "perp", "cross_exchange", "sequence"):
         group_rules = [r for r in rules if r["group"] == group]
         robust = [r for r in group_rules if r["robust"]]
         robust_by_feature = {}
