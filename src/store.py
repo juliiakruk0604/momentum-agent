@@ -917,6 +917,95 @@ class SignalStore:
             })
         return out
 
+    def v24_labeled_snapshots_with_base(
+        self,
+        horizon_seconds: int,
+        limit: int = 20000,
+        max_base_age_seconds: int = 150,
+    ):
+        max_age = int(max_base_age_seconds)
+        if self.backend == "postgres":
+            rows = self._execute(
+                "",
+                '''SELECT s.snapshot_ms,s.symbol,s.payload_json,
+                          l.payload_json AS label_json,
+                          b.payload_json AS base_payload_json,
+                          b.snapshot_time AS base_snapshot_time
+                   FROM v24_feature_snapshots s
+                   JOIN v24_feature_labels l
+                     ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                   LEFT JOIN LATERAL (
+                     SELECT v.payload_json,v.snapshot_time
+                     FROM v22_flow_snapshots v
+                     WHERE v.symbol=s.symbol
+                       AND v.snapshot_time <= to_timestamp(s.snapshot_ms / 1000.0)
+                       AND v.snapshot_time >= to_timestamp(s.snapshot_ms / 1000.0) - (%s * INTERVAL '1 second')
+                     ORDER BY v.snapshot_time DESC
+                     LIMIT 1
+                   ) b ON TRUE
+                   WHERE l.horizon_seconds=%s
+                   ORDER BY s.snapshot_ms ASC LIMIT %s''',
+                (max_age, int(horizon_seconds), int(limit)),
+                fetch="all",
+            )
+        else:
+            rows = self._execute(
+                '''SELECT s.snapshot_ms,s.symbol,s.payload_json,
+                          l.payload_json AS label_json,
+                          (
+                            SELECT v.payload_json
+                            FROM v22_flow_snapshots v
+                            WHERE v.symbol=s.symbol
+                              AND julianday(v.snapshot_time) <= julianday(s.snapshot_ms / 1000.0, 'unixepoch')
+                              AND julianday(v.snapshot_time) >= julianday((s.snapshot_ms / 1000.0) - ?, 'unixepoch')
+                            ORDER BY julianday(v.snapshot_time) DESC
+                            LIMIT 1
+                          ) AS base_payload_json,
+                          (
+                            SELECT v.snapshot_time
+                            FROM v22_flow_snapshots v
+                            WHERE v.symbol=s.symbol
+                              AND julianday(v.snapshot_time) <= julianday(s.snapshot_ms / 1000.0, 'unixepoch')
+                              AND julianday(v.snapshot_time) >= julianday((s.snapshot_ms / 1000.0) - ?, 'unixepoch')
+                            ORDER BY julianday(v.snapshot_time) DESC
+                            LIMIT 1
+                          ) AS base_snapshot_time
+                   FROM v24_feature_snapshots s
+                   JOIN v24_feature_labels l
+                     ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                   WHERE l.horizon_seconds=?
+                   ORDER BY s.snapshot_ms ASC LIMIT ?''',
+                "",
+                (max_age, max_age, int(horizon_seconds), int(limit)),
+                fetch="all",
+            )
+
+        out = []
+        for row in rows:
+            snapshot = _loads(row.get("payload_json")) or {}
+            label = _loads(row.get("label_json")) or {}
+            if str(label.get("label_version") or "") != "price_tick_v3_passage":
+                continue
+
+            base_payload = _loads(row.get("base_payload_json")) or {}
+            # Preserve the base context captured directly in V2.4 when present.
+            # Otherwise use only the SQL-selected point-in-time V2.2 snapshot.
+            if not snapshot.get("base_momentum") and base_payload:
+                snapshot = {
+                    **snapshot,
+                    "base_momentum": base_payload,
+                    "base_momentum_source": "v22_point_in_time_join",
+                    "base_momentum_snapshot_time": str(row.get("base_snapshot_time")),
+                }
+
+            out.append({
+                "snapshot_ms": int(row.get("snapshot_ms") or 0),
+                "symbol": row.get("symbol"),
+                "snapshot": snapshot,
+                "label": label,
+            })
+        return out
+
     def prune_v24_feature_snapshots(self, older_than_ms: int):
         self._execute(
             "DELETE FROM v24_feature_snapshots WHERE snapshot_ms<?",
