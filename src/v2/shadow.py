@@ -4,7 +4,7 @@ import os
 import pandas as pd
 
 from .provider import BybitV2Provider
-from .research import trade_metrics, monte_carlo
+from .research import trade_metrics, monte_carlo, grouped_trade_metrics
 from .simulator import find_barrier_exit
 
 
@@ -309,6 +309,13 @@ def summary(state):
         "current_version_closed_trades": len(current_trades),
         "metrics": metrics,
         "metrics_all_versions": metrics_all,
+        "by_setup": grouped_trade_metrics(current_trades, "setup", starting_equity=start),
+        "by_regime": grouped_trade_metrics(current_trades, "regime", starting_equity=start),
+        "by_setup_regime": grouped_trade_metrics(
+            [{**t, "setup_regime": f"{t.get('setup','UNKNOWN')}|{t.get('regime','UNKNOWN')}"} for t in current_trades],
+            "setup_regime",
+            starting_equity=start,
+        ),
         "monte_carlo": mc,
         "last_action": state.get("last_action"),
         "last_rejection": state.get("last_rejection"),
