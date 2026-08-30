@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-HORIZONS = (5, 15, 30, 60, 120, 300, 900)
+HORIZONS = (5, 15, 30, 60, 120, 300, 900, 1800)
 LABEL_VERSION = "price_tick_v3_passage"
 
 
