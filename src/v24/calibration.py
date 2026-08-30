@@ -115,6 +115,10 @@ def _metrics(rows):
     h05 = sum(bool(x.get("hit_0_5")) for x in labels)
     positive = sum(v > 0.0 for v in finals)
     net = [v - cost for v in finals]
+    tp035 = sum(bool(_nested(x, "passage_035_015", "tp_before_sl")) for x in labels)
+    tp050 = sum(bool(_nested(x, "passage_050_025", "tp_before_sl")) for x in labels)
+    tp100 = sum(bool(_nested(x, "passage_100_050", "tp_before_sl")) for x in labels)
+    tp200 = sum(bool(_nested(x, "passage_200_075", "tp_before_sl")) for x in labels)
 
     return {
         "n": n,
@@ -127,6 +131,12 @@ def _metrics(rows):
         "p_hit_0_25": h025 / n,
         "p_hit_0_5": h05 / n,
         "p_positive_final": positive / n,
+        "p_tp035_before_sl015": tp035 / n,
+        "p_tp050_before_sl025": tp050 / n,
+        "p_tp100_before_sl050": tp100 / n,
+        "p_tp200_before_sl075": tp200 / n,
+        "p_tp035_before_sl015_wilson_lower_90": _wilson_lower(tp035, n),
+        "p_tp050_before_sl025_wilson_lower_90": _wilson_lower(tp050, n),
         "p_hit_0_1_wilson_lower_90": _wilson_lower(h01, n),
         "p_hit_0_25_wilson_lower_90": _wilson_lower(h025, n),
     }
@@ -184,6 +194,13 @@ def _evaluate_rule(train_m, valid_m, base_train, base_valid):
     base_train_hit = float(base_train.get("p_hit_0_1") or 0.0)
     base_valid_hit = float(base_valid.get("p_hit_0_1") or 0.0)
 
+    target_train = float(train_m.get("p_tp035_before_sl015") or 0.0)
+    target_valid = float(valid_m.get("p_tp035_before_sl015") or 0.0)
+    target_base_train = float(base_train.get("p_tp035_before_sl015") or 0.0)
+    target_base_valid = float(base_valid.get("p_tp035_before_sl015") or 0.0)
+    target_train_lower = float(train_m.get("p_tp035_before_sl015_wilson_lower_90") or 0.0)
+    target_valid_lower = float(valid_m.get("p_tp035_before_sl015_wilson_lower_90") or 0.0)
+
     robust = (
         train_lift > 0.0
         and valid_lift > 0.0
@@ -193,6 +210,10 @@ def _evaluate_rule(train_m, valid_m, base_train, base_valid):
         and float(valid_m.get("avg_mfe_bid_pct") or 0.0) > float(base_valid.get("avg_mfe_bid_pct") or 0.0)
         and train_hit >= base_train_hit
         and valid_hit >= base_valid_hit
+        and target_train > target_base_train
+        and target_valid > target_base_valid
+        and target_train_lower > target_base_train
+        and target_valid_lower > target_base_valid
     )
 
     score = (
@@ -201,6 +222,8 @@ def _evaluate_rule(train_m, valid_m, base_train, base_valid):
         + max(valid_lift, 0.0) * 2.0
         + max(train_lift, 0.0)
         + max(valid_hit - base_valid_hit, 0.0)
+        + max(target_valid - target_base_valid, 0.0) * 2.0
+        + max(target_train - target_base_train, 0.0)
     )
 
     return {
@@ -208,6 +231,8 @@ def _evaluate_rule(train_m, valid_m, base_train, base_valid):
         "score": round(score, 8),
         "train_net_lift_pct": round(train_lift, 8),
         "validation_net_lift_pct": round(valid_lift, 8),
+        "train_tp035_before_sl015_lift": round(target_train - target_base_train, 8),
+        "validation_tp035_before_sl015_lift": round(target_valid - target_base_valid, 8),
     }
 
 
@@ -291,11 +316,11 @@ def run_v24_calibration(store):
     result = {
         "engine": "MomentumAgentV2.4",
         "mode": "EVENT_FEATURE_ABLATION",
-        "label_version": "price_tick_v2",
+        "label_version": "price_tick_v3_passage",
         "auto_apply": False,
         "horizons": {},
     }
-    for horizon in (5, 15, 30, 60):
+    for horizon in (5, 15, 30, 60, 120, 300, 900):
         result["horizons"][str(horizon)] = calibrate_horizon(store, horizon)
     store.set_runtime("v24_empirical_calibration", result)
     return result
