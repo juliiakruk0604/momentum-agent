@@ -14,6 +14,7 @@ from src.v2.shadow import summary as v2_shadow_summary
 from src.v2.readiness import evaluate_v2_readiness
 from src.v22.shadow import summary as v22_shadow_summary
 from src.v22.readiness import evaluate_v22_readiness
+from src.v24.readiness import evaluate_v24_readiness
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -552,3 +553,23 @@ def v24_shadow_pnl():
             "live_execution": False,
         }
     return row["value"]
+
+
+@app.get("/v24/readiness")
+def v24_readiness():
+    return evaluate_v24_readiness(store)
+
+
+@app.get("/v24/feature-stats")
+def v24_feature_stats():
+    return {
+        "engine": "MomentumAgentV2.4",
+        "snapshots": store.v24_feature_snapshot_stats(),
+        "labels": store.v24_feature_label_stats(),
+        "labeler_error": (
+            None
+            if store.get_runtime("v24_feature_labeler_error") is None
+            else store.get_runtime("v24_feature_labeler_error").get("value")
+        ),
+        "live_execution": False,
+    }
