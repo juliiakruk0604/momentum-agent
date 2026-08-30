@@ -807,6 +807,80 @@ class SignalStore:
             fetch="all",
         )
 
+    def v24_independent_label_candidates(
+        self,
+        horizon_seconds: int,
+        limit: int = 100,
+        min_snapshot_ms: int = 0,
+    ):
+        """Return one mature, horizon-spaced unlabeled snapshot per symbol."""
+        horizon_ms = int(horizon_seconds) * 1000
+        tolerance_ms = int(os.getenv("V24_LABEL_END_TOLERANCE_MS", "1500"))
+        cutoff_ms = int(_utc_now().timestamp() * 1000) - horizon_ms - tolerance_ms
+        sqlite = '''WITH eligible AS (
+                      SELECT s.*,
+                             ROW_NUMBER() OVER (
+                               PARTITION BY s.symbol ORDER BY s.snapshot_ms ASC
+                             ) AS priority_rank
+                      FROM v24_feature_snapshots s
+                      LEFT JOIN v24_feature_labels l
+                        ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                       AND l.horizon_seconds=?
+                      WHERE s.snapshot_ms>=? AND s.snapshot_ms<=? AND l.symbol IS NULL
+                        AND EXISTS (
+                          SELECT 1 FROM v24_price_ticks p
+                          WHERE p.symbol=s.symbol
+                            AND ABS(p.snapshot_ms - (s.snapshot_ms + ?)) <= ?
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1 FROM v24_feature_labels prior
+                          WHERE prior.symbol=s.symbol
+                            AND prior.horizon_seconds=?
+                            AND prior.snapshot_ms<s.snapshot_ms
+                            AND prior.snapshot_ms>s.snapshot_ms-?
+                        )
+                    )
+                    SELECT * FROM eligible
+                    WHERE priority_rank=1
+                    ORDER BY snapshot_ms ASC LIMIT ?'''
+        postgres = '''WITH eligible AS (
+                        SELECT s.*,
+                               ROW_NUMBER() OVER (
+                                 PARTITION BY s.symbol ORDER BY s.snapshot_ms ASC
+                               ) AS priority_rank
+                        FROM v24_feature_snapshots s
+                        LEFT JOIN v24_feature_labels l
+                          ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                         AND l.horizon_seconds=%s
+                        WHERE s.snapshot_ms>=%s AND s.snapshot_ms<=%s AND l.symbol IS NULL
+                          AND EXISTS (
+                            SELECT 1 FROM v24_price_ticks p
+                            WHERE p.symbol=s.symbol
+                              AND ABS(p.snapshot_ms - (s.snapshot_ms + %s)) <= %s
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM v24_feature_labels prior
+                            WHERE prior.symbol=s.symbol
+                              AND prior.horizon_seconds=%s
+                              AND prior.snapshot_ms<s.snapshot_ms
+                              AND prior.snapshot_ms>s.snapshot_ms-%s
+                          )
+                      )
+                      SELECT * FROM eligible
+                      WHERE priority_rank=1
+                      ORDER BY snapshot_ms ASC LIMIT %s'''
+        params = (
+            int(horizon_seconds),
+            int(min_snapshot_ms),
+            cutoff_ms,
+            horizon_ms,
+            tolerance_ms,
+            int(horizon_seconds),
+            horizon_ms,
+            int(limit),
+        )
+        return self._execute(sqlite, postgres, params, fetch="all")
+
     def v24_feature_path(self, symbol: str, start_ms: int, end_ms: int):
         return self._execute(
             '''SELECT snapshot_ms,best_bid,best_ask,mid,microstructure_score,payload_json

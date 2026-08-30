@@ -149,38 +149,74 @@ class V24FeatureLabeler:
             "by_horizon": {},
         }
 
+        priority_boundary_ms = 0
+        for key in ("v25_full_base_context_started", "v25_slow_state_gen2_started"):
+            row = self.store.get_runtime(key)
+            value = None if row is None else row.get("value")
+            if isinstance(value, dict):
+                priority_boundary_ms = max(
+                    priority_boundary_ms,
+                    int(value.get("started_ms") or 0),
+                )
+        result["priority_boundary_ms"] = priority_boundary_ms
+
         for horizon in HORIZONS:
-            candidates = self.store.v24_label_candidates(
-                horizon,
-                limit=per_horizon,
-                min_snapshot_ms=min_snapshot_ms,
-            )
             labeled = 0
             errors = 0
-            for snapshot in candidates:
-                try:
-                    end_ms = int(snapshot["snapshot_ms"]) + int(horizon) * 1000
-                    tolerance_ms = int(os.getenv("V24_LABEL_END_TOLERANCE_MS", "1500"))
-                    path = self.store.v24_price_path(
-                        str(snapshot["symbol"]),
-                        int(snapshot["snapshot_ms"]),
-                        end_ms + tolerance_ms,
-                    )
-                    label = label_from_path(snapshot, path, horizon)
-                    self.store.upsert_v24_feature_label(label)
-                    labeled += 1
-                    result["labeled"] += 1
-                except Exception as exc:
-                    errors += 1
-                    result["errors"].append({
-                        "symbol": snapshot.get("symbol"),
-                        "snapshot_ms": snapshot.get("snapshot_ms"),
-                        "horizon_seconds": horizon,
-                        "error": repr(exc)[:220],
-                    })
+            priority_labeled = 0
+
+            def process(candidates, priority=False):
+                nonlocal labeled, errors, priority_labeled
+                for snapshot in candidates:
+                    try:
+                        end_ms = int(snapshot["snapshot_ms"]) + int(horizon) * 1000
+                        tolerance_ms = int(os.getenv("V24_LABEL_END_TOLERANCE_MS", "1500"))
+                        path = self.store.v24_price_path(
+                            str(snapshot["symbol"]),
+                            int(snapshot["snapshot_ms"]),
+                            end_ms + tolerance_ms,
+                        )
+                        label = label_from_path(snapshot, path, horizon)
+                        self.store.upsert_v24_feature_label(label)
+                        labeled += 1
+                        result["labeled"] += 1
+                        if priority:
+                            priority_labeled += 1
+                    except Exception as exc:
+                        errors += 1
+                        result["errors"].append({
+                            "symbol": snapshot.get("symbol"),
+                            "snapshot_ms": snapshot.get("snapshot_ms"),
+                            "horizon_seconds": horizon,
+                            "error": repr(exc)[:220],
+                        })
+
+            priority_candidates = []
+            if priority_boundary_ms > 0:
+                priority_candidates = self.store.v24_independent_label_candidates(
+                    horizon,
+                    limit=per_horizon,
+                    min_snapshot_ms=max(min_snapshot_ms, priority_boundary_ms),
+                )
+                process(priority_candidates, priority=True)
+
+            remaining = max(0, per_horizon - labeled)
+            backlog_candidates = []
+            if remaining:
+                backlog_candidates = self.store.v24_label_candidates(
+                    horizon,
+                    limit=remaining,
+                    min_snapshot_ms=min_snapshot_ms,
+                )
+                process(backlog_candidates)
+
+            candidates_count = len(priority_candidates) + len(backlog_candidates)
             result["by_horizon"][str(horizon)] = {
-                "eligible": len(candidates),
+                "eligible": candidates_count,
                 "labeled": labeled,
+                "priority_eligible": len(priority_candidates),
+                "priority_labeled": priority_labeled,
+                "backlog_eligible": len(backlog_candidates),
                 "errors": errors,
             }
 

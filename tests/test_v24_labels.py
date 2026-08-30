@@ -1,4 +1,5 @@
 import pytest
+import time
 
 from src.store import SignalStore
 from src.v24.labels import label_from_path
@@ -91,3 +92,58 @@ def test_v24_batched_price_tape(tmp_path):
     assert len(path) == 1
     assert path[0]["best_bid"] == 100.2
     assert store.v24_price_tick_stats()["ticks"] == 4
+
+
+def test_priority_candidates_are_one_per_symbol_and_horizon_spaced(tmp_path):
+    store = SignalStore(path=str(tmp_path / "priority.db"), database_url=None)
+    horizon = 5
+    start_ms = int(time.time() * 1000) - 30_000
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        for offset in (0, 1_000, 5_000):
+            snapshot_ms = start_ms + offset
+            store.upsert_v24_feature_snapshot({
+                "snapshot_ms": snapshot_ms,
+                "symbol": symbol,
+                "best_bid": 100.0,
+                "best_ask": 100.1,
+                "mid": 100.05,
+                "microstructure_score": 50.0,
+            })
+            store.insert_v24_price_ticks_batch(snapshot_ms + horizon * 1000, [{
+                "symbol": symbol,
+                "best_bid": 100.2,
+                "best_ask": 100.3,
+                "mid": 100.25,
+            }])
+
+    first = store.v24_independent_label_candidates(
+        horizon,
+        limit=10,
+        min_snapshot_ms=start_ms,
+    )
+    assert {(row["symbol"], row["snapshot_ms"]) for row in first} == {
+        ("BTCUSDT", start_ms),
+        ("ETHUSDT", start_ms),
+    }
+
+    for row in first:
+        store.upsert_v24_feature_label({
+            "symbol": row["symbol"],
+            "snapshot_ms": row["snapshot_ms"],
+            "horizon_seconds": horizon,
+            "entry_ask": 100.1,
+            "final_bid_return_pct": 0.1,
+            "mfe_bid_pct": 0.2,
+            "mae_bid_pct": -0.1,
+            "label_version": "price_tick_v3_passage",
+        })
+
+    second = store.v24_independent_label_candidates(
+        horizon,
+        limit=10,
+        min_snapshot_ms=start_ms,
+    )
+    assert {(row["symbol"], row["snapshot_ms"]) for row in second} == {
+        ("BTCUSDT", start_ms + 5_000),
+        ("ETHUSDT", start_ms + 5_000),
+    }
