@@ -142,11 +142,19 @@ class BinanceTradeStream:
     def context(self, symbol, now_ms=None):
         now_ms = int(now_ms or time.time() * 1000)
         rows = list(self.trades.get(symbol) or [])
-        w1 = self._window(rows, now_ms, 1)
-        w5 = self._window(rows, now_ms, 5)
+        latest_trade_ms = int(rows[-1]["time"]) if rows else 0
+        age_ms = max(0, now_ms - latest_trade_ms) if latest_trade_ms else None
+        max_context_age_ms = max(1000, int(os.getenv("V24_BINANCE_CONTEXT_MAX_AGE_MS", "5000")))
+        available = bool(rows) and age_ms is not None and age_ms <= max_context_age_ms
+        w1 = self._window(rows, now_ms, 1) if available else self._window([], now_ms, 1)
+        w5 = self._window(rows, now_ms, 5) if available else self._window([], now_ms, 5)
         return {
-            "available": bool(rows),
+            "available": available,
+            "stale": bool(rows) and not available,
             "symbol": symbol,
+            "latest_trade_ms": latest_trade_ms or None,
+            "age_ms": age_ms,
+            "max_context_age_ms": max_context_age_ms,
             "trade_1s": w1,
             "trade_5s": w5,
         }
