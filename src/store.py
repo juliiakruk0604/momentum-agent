@@ -72,6 +72,24 @@ CREATE TABLE IF NOT EXISTS historical_symbol_runs(
   processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(dataset_id, symbol)
 );
+CREATE TABLE IF NOT EXISTS v22_flow_snapshots(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_time TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  signal_time TEXT,
+  price REAL,
+  score REAL,
+  regime TEXT,
+  action TEXT,
+  fast_json TEXT,
+  book_json TEXT,
+  trade_flow_json TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(symbol, snapshot_time)
+);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_time ON v22_flow_snapshots(snapshot_time);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_symbol_time ON v22_flow_snapshots(symbol,snapshot_time);
 '''
 
 POSTGRES_SCHEMA = '''
@@ -131,6 +149,24 @@ CREATE TABLE IF NOT EXISTS historical_symbol_runs(
   processed_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY(dataset_id, symbol)
 );
+CREATE TABLE IF NOT EXISTS v22_flow_snapshots(
+  id BIGSERIAL PRIMARY KEY,
+  snapshot_time TIMESTAMPTZ NOT NULL,
+  symbol TEXT NOT NULL,
+  signal_time TIMESTAMPTZ,
+  price DOUBLE PRECISION,
+  score DOUBLE PRECISION,
+  regime TEXT,
+  action TEXT,
+  fast_json TEXT,
+  book_json TEXT,
+  trade_flow_json TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(symbol, snapshot_time)
+);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_time ON v22_flow_snapshots(snapshot_time);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_symbol_time ON v22_flow_snapshots(symbol,snapshot_time);
 CREATE INDEX IF NOT EXISTS idx_historical_events_dataset ON historical_events(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_historical_events_fold ON historical_events(dataset_id,fold_id);
 CREATE INDEX IF NOT EXISTS idx_historical_symbol_runs_dataset ON historical_symbol_runs(dataset_id);
@@ -313,6 +349,70 @@ class SignalStore:
             "fully_labeled_24h": int((labeled_24h or {}).get("n", 0)),
             "by_state": rows,
             "backend": self.backend,
+        }
+
+    def upsert_v22_flow_snapshot(self, snapshot: dict):
+        snapshot_time = str(snapshot.get("snapshot_time") or snapshot.get("generated_at") or _utc_now())
+        symbol = str(snapshot.get("symbol") or "")
+        if not symbol:
+            raise ValueError("v22 snapshot requires symbol")
+        fast = snapshot.get("fast_features") or {}
+        signal_time = snapshot.get("signal_time") or fast.get("signal_time")
+        params = (
+            snapshot_time,
+            symbol,
+            None if signal_time is None else str(signal_time),
+            float(snapshot.get("signal_price") or fast.get("price") or 0.0),
+            float(snapshot.get("score") or 0.0),
+            str(snapshot.get("regime") or ""),
+            str(snapshot.get("action") or ""),
+            json.dumps(fast, default=str),
+            json.dumps(snapshot.get("book") or {}, default=str),
+            json.dumps(snapshot.get("trade_flow") or {}, default=str),
+            json.dumps(snapshot, default=str),
+        )
+        self._execute(
+            '''INSERT INTO v22_flow_snapshots(
+                 snapshot_time,symbol,signal_time,price,score,regime,action,
+                 fast_json,book_json,trade_flow_json,payload_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(symbol,snapshot_time) DO UPDATE SET
+                 signal_time=excluded.signal_time,price=excluded.price,score=excluded.score,
+                 regime=excluded.regime,action=excluded.action,fast_json=excluded.fast_json,
+                 book_json=excluded.book_json,trade_flow_json=excluded.trade_flow_json,
+                 payload_json=excluded.payload_json''',
+            '''INSERT INTO v22_flow_snapshots(
+                 snapshot_time,symbol,signal_time,price,score,regime,action,
+                 fast_json,book_json,trade_flow_json,payload_json
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT(symbol,snapshot_time) DO UPDATE SET
+                 signal_time=EXCLUDED.signal_time,price=EXCLUDED.price,score=EXCLUDED.score,
+                 regime=EXCLUDED.regime,action=EXCLUDED.action,fast_json=EXCLUDED.fast_json,
+                 book_json=EXCLUDED.book_json,trade_flow_json=EXCLUDED.trade_flow_json,
+                 payload_json=EXCLUDED.payload_json''',
+            params,
+        )
+
+    def v22_flow_snapshot_stats(self):
+        total = self._execute(
+            "SELECT COUNT(*) AS n FROM v22_flow_snapshots",
+            "SELECT COUNT(*) AS n FROM v22_flow_snapshots",
+            fetch="one",
+        )
+        symbols = self._execute(
+            "SELECT COUNT(DISTINCT symbol) AS n FROM v22_flow_snapshots",
+            "SELECT COUNT(DISTINCT symbol) AS n FROM v22_flow_snapshots",
+            fetch="one",
+        )
+        latest = self._execute(
+            "SELECT MAX(snapshot_time) AS ts FROM v22_flow_snapshots",
+            "SELECT MAX(snapshot_time) AS ts FROM v22_flow_snapshots",
+            fetch="one",
+        )
+        return {
+            "snapshots": int((total or {}).get("n") or 0),
+            "symbols": int((symbols or {}).get("n") or 0),
+            "latest_snapshot_time": None if not latest else str(latest.get("ts")),
         }
 
     def set_runtime(self, key: str, value):
