@@ -20,6 +20,7 @@ from src.readiness import combine_readiness
 from src.promo_scanner import scan_promos
 from src.bybit_account import account_diagnostic, funding_balances
 from src.execution.bybit_spot import build_spot_plan, place_spot_plan
+from src.shadow_portfolio import process_shadow_portfolio
 from src.store import SignalStore
 
 
@@ -339,6 +340,11 @@ def run_once(provider, store, cfg, universe_limit=100):
 
     label_stats = process_labels(provider, store, cfg, now)
     try:
+        shadow_stats = process_shadow_portfolio(store)
+    except Exception as exc:
+        shadow_stats = {"mode": "LIVE_SHADOW_REAL_MARKET", "error": repr(exc)}
+        print("shadow_portfolio_error", repr(exc), flush=True)
+    try:
         micro_live_stats = process_micro_live(store)
     except Exception as exc:
         micro_live_stats = {"action": "NO_TRADE", "reason": "micro_live_exception", "error": repr(exc)}
@@ -362,6 +368,7 @@ def run_once(provider, store, cfg, universe_limit=100):
         **label_stats,
         "promo_scan": promo_stats,
         "micro_live": micro_live_stats,
+        "shadow_portfolio": shadow_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
     today = pd.Timestamp.now(tz="UTC").date().isoformat()
