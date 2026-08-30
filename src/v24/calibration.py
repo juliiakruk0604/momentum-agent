@@ -51,6 +51,17 @@ FEATURES = {
         lambda s: float(_nested(s, "perp_context", "liquidation_30s", "long_liq_notional") or 0.0)
         + float(_nested(s, "perp_context", "liquidation_30s", "short_liq_notional") or 0.0),
     ),
+    "long_liq_5s": ("liquidation_reversal", "high", lambda s: _nested(s, "perp_context", "liquidation_5s", "long_liq_notional")),
+    "long_liq_30s": ("liquidation_reversal", "high", lambda s: _nested(s, "perp_context", "liquidation_30s", "long_liq_notional")),
+    "short_liq_5s": ("short_squeeze", "high", lambda s: _nested(s, "perp_context", "liquidation_5s", "short_liq_notional")),
+    "short_liq_30s": ("short_squeeze", "high", lambda s: _nested(s, "perp_context", "liquidation_30s", "short_liq_notional")),
+    "down_shock_5s_pct": ("liquidation_reversal", "high", lambda s: max(-float(s.get("price_move_5s_pct") or 0.0), 0.0)),
+    "long_liq_depth_ratio_5s": (
+        "liquidation_reversal",
+        "high",
+        lambda s: float(_nested(s, "perp_context", "liquidation_5s", "long_liq_notional") or 0.0)
+        / max(float(s.get("bid_depth_5_usdt") or 0.0) + float(s.get("ask_depth_5_usdt") or 0.0), 1.0),
+    ),
 
     # External venue lead/lag. No feature here is authorized for trading by default.
     "external_consensus_move_1s_pct": ("cross_exchange", "high", lambda s: _nested(s, "cross_exchange", "external_consensus_move_1s_pct")),
@@ -288,6 +299,11 @@ def _is_research_event(row):
         os.getenv("V24_EVENT_MIN_SCORE_DELTA_3S", "10")
     ):
         return True
+    liq5 = s.get("perp_context") or {}
+    liq5 = liq5.get("liquidation_5s") or {}
+    liq_notional = float(liq5.get("long_liq_notional") or 0.0) + float(liq5.get("short_liq_notional") or 0.0)
+    if liq_notional >= float(os.getenv("V24_EVENT_MIN_LIQ_NOTIONAL_USDT", "5000")):
+        return True
     return False
 
 
@@ -379,7 +395,7 @@ def calibrate_horizon(store, horizon_seconds):
     rules.sort(key=lambda x: (bool(x["robust"]), float(x["score"])), reverse=True)
 
     grouped = {}
-    for group in ("base_momentum", "microstructure", "perp", "cross_exchange", "sequence"):
+    for group in ("base_momentum", "microstructure", "perp", "cross_exchange", "sequence", "liquidation_reversal", "short_squeeze"):
         group_rules = [r for r in rules if r["group"] == group]
         robust = [r for r in group_rules if r["robust"]]
         robust_by_feature = {}
