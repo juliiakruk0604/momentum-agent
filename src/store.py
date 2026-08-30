@@ -90,6 +90,25 @@ CREATE TABLE IF NOT EXISTS v22_flow_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_v22_flow_time ON v22_flow_snapshots(snapshot_time);
 CREATE INDEX IF NOT EXISTS idx_v22_flow_symbol_time ON v22_flow_snapshots(symbol,snapshot_time);
+CREATE TABLE IF NOT EXISTS v22_flow_labels(
+  symbol TEXT NOT NULL,
+  snapshot_time TEXT NOT NULL,
+  horizon_minutes INTEGER NOT NULL,
+  entry_price REAL NOT NULL,
+  final_return_pct REAL,
+  mfe_pct REAL,
+  mae_pct REAL,
+  hit_0_5 INTEGER DEFAULT 0,
+  hit_1 INTEGER DEFAULT 0,
+  hit_2 INTEGER DEFAULT 0,
+  hit_5 INTEGER DEFAULT 0,
+  hit_10 INTEGER DEFAULT 0,
+  payload_json TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(symbol,snapshot_time,horizon_minutes)
+);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_labels_horizon ON v22_flow_labels(horizon_minutes);
 '''
 
 POSTGRES_SCHEMA = '''
@@ -167,6 +186,25 @@ CREATE TABLE IF NOT EXISTS v22_flow_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_v22_flow_time ON v22_flow_snapshots(snapshot_time);
 CREATE INDEX IF NOT EXISTS idx_v22_flow_symbol_time ON v22_flow_snapshots(symbol,snapshot_time);
+CREATE TABLE IF NOT EXISTS v22_flow_labels(
+  symbol TEXT NOT NULL,
+  snapshot_time TIMESTAMPTZ NOT NULL,
+  horizon_minutes INTEGER NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL,
+  final_return_pct DOUBLE PRECISION,
+  mfe_pct DOUBLE PRECISION,
+  mae_pct DOUBLE PRECISION,
+  hit_0_5 BOOLEAN DEFAULT FALSE,
+  hit_1 BOOLEAN DEFAULT FALSE,
+  hit_2 BOOLEAN DEFAULT FALSE,
+  hit_5 BOOLEAN DEFAULT FALSE,
+  hit_10 BOOLEAN DEFAULT FALSE,
+  payload_json TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY(symbol,snapshot_time,horizon_minutes)
+);
+CREATE INDEX IF NOT EXISTS idx_v22_flow_labels_horizon ON v22_flow_labels(horizon_minutes);
 CREATE INDEX IF NOT EXISTS idx_historical_events_dataset ON historical_events(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_historical_events_fold ON historical_events(dataset_id,fold_id);
 CREATE INDEX IF NOT EXISTS idx_historical_symbol_runs_dataset ON historical_symbol_runs(dataset_id);
@@ -414,6 +452,90 @@ class SignalStore:
             "symbols": int((symbols or {}).get("n") or 0),
             "latest_snapshot_time": None if not latest else str(latest.get("ts")),
         }
+
+    def v22_flow_label_candidates(self, horizon_minutes: int, limit: int = 100):
+        cutoff = _utc_now().timestamp() - int(horizon_minutes) * 60
+        cutoff_dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+        return self._execute(
+            '''SELECT s.* FROM v22_flow_snapshots s
+               LEFT JOIN v22_flow_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_time=s.snapshot_time
+                AND l.horizon_minutes=?
+               WHERE s.snapshot_time<=? AND l.symbol IS NULL
+               ORDER BY s.snapshot_time ASC LIMIT ?''',
+            '''SELECT s.* FROM v22_flow_snapshots s
+               LEFT JOIN v22_flow_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_time=s.snapshot_time
+                AND l.horizon_minutes=%s
+               WHERE s.snapshot_time<=%s AND l.symbol IS NULL
+               ORDER BY s.snapshot_time ASC LIMIT %s''',
+            (int(horizon_minutes), cutoff_dt, int(limit)),
+            fetch="all",
+        )
+
+    def upsert_v22_flow_label(self, label: dict):
+        params = (
+            str(label["symbol"]),
+            str(label["snapshot_time"]),
+            int(label["horizon_minutes"]),
+            float(label["entry_price"]),
+            float(label.get("final_return_pct") or 0.0),
+            float(label.get("mfe_pct") or 0.0),
+            float(label.get("mae_pct") or 0.0),
+            int(bool(label.get("hit_0_5"))),
+            int(bool(label.get("hit_1"))),
+            int(bool(label.get("hit_2"))),
+            int(bool(label.get("hit_5"))),
+            int(bool(label.get("hit_10"))),
+            json.dumps(label, default=str),
+        )
+        self._execute(
+            '''INSERT INTO v22_flow_labels(
+                 symbol,snapshot_time,horizon_minutes,entry_price,final_return_pct,mfe_pct,mae_pct,
+                 hit_0_5,hit_1,hit_2,hit_5,hit_10,payload_json,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(symbol,snapshot_time,horizon_minutes) DO UPDATE SET
+                 entry_price=excluded.entry_price,final_return_pct=excluded.final_return_pct,
+                 mfe_pct=excluded.mfe_pct,mae_pct=excluded.mae_pct,hit_0_5=excluded.hit_0_5,
+                 hit_1=excluded.hit_1,hit_2=excluded.hit_2,hit_5=excluded.hit_5,
+                 hit_10=excluded.hit_10,payload_json=excluded.payload_json,
+                 updated_at=CURRENT_TIMESTAMP''',
+            '''INSERT INTO v22_flow_labels(
+                 symbol,snapshot_time,horizon_minutes,entry_price,final_return_pct,mfe_pct,mae_pct,
+                 hit_0_5,hit_1,hit_2,hit_5,hit_10,payload_json,updated_at
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+               ON CONFLICT(symbol,snapshot_time,horizon_minutes) DO UPDATE SET
+                 entry_price=EXCLUDED.entry_price,final_return_pct=EXCLUDED.final_return_pct,
+                 mfe_pct=EXCLUDED.mfe_pct,mae_pct=EXCLUDED.mae_pct,hit_0_5=EXCLUDED.hit_0_5,
+                 hit_1=EXCLUDED.hit_1,hit_2=EXCLUDED.hit_2,hit_5=EXCLUDED.hit_5,
+                 hit_10=EXCLUDED.hit_10,payload_json=EXCLUDED.payload_json,
+                 updated_at=NOW()''',
+            params,
+        )
+
+    def v22_flow_label_stats(self):
+        rows = self._execute(
+            '''SELECT horizon_minutes,COUNT(*) AS n,
+                      AVG(final_return_pct) AS avg_final,
+                      AVG(mfe_pct) AS avg_mfe,
+                      AVG(mae_pct) AS avg_mae,
+                      AVG(hit_1) AS p_hit_1,
+                      AVG(hit_2) AS p_hit_2,
+                      AVG(hit_5) AS p_hit_5,
+                      AVG(hit_10) AS p_hit_10
+               FROM v22_flow_labels GROUP BY horizon_minutes ORDER BY horizon_minutes''',
+            '''SELECT horizon_minutes,COUNT(*) AS n,
+                      AVG(final_return_pct) AS avg_final,
+                      AVG(mfe_pct) AS avg_mfe,
+                      AVG(mae_pct) AS avg_mae,
+                      AVG((hit_1)::int) AS p_hit_1,
+                      AVG((hit_2)::int) AS p_hit_2,
+                      AVG((hit_5)::int) AS p_hit_5,
+                      AVG((hit_10)::int) AS p_hit_10
+               FROM v22_flow_labels GROUP BY horizon_minutes ORDER BY horizon_minutes''',
+            fetch="all",
+        )
+        return rows
 
     def set_runtime(self, key: str, value):
         payload = json.dumps(value, default=str)
