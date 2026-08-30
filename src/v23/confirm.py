@@ -22,6 +22,10 @@ def confirmation_decision(armed, current, now=None):
 
     armed_at = _ts(armed.get("armed_at"))
     age = (now - armed_at).total_seconds()
+    armed_scan = armed.get("scan_generated_at")
+    current_scan = current.get("_scan_generated_at")
+    if not armed_scan or not current_scan or str(armed_scan) == str(current_scan):
+        reasons.append("same_snapshot")
     if age < float(os.getenv("V23_MIN_CONFIRM_SECONDS", "35")):
         reasons.append("confirmation_too_early")
     if age > float(os.getenv("V23_MAX_CONFIRM_SECONDS", "150")):
