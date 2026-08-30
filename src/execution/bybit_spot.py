@@ -141,7 +141,7 @@ def ensure_unified_usdt(minimum: float) -> dict:
         "funding_before_usdt": funding,
     }
 
-def build_spot_plan(symbol: str, signal_price: float) -> SpotExecutionPlan:
+def build_spot_plan(symbol: str, signal_price: float, *, allow_transfer: bool = True, simulated_balance_usdt: float | None = None) -> SpotExecutionPlan:
     blockers: list[str] = []
     symbol = str(symbol).upper()
     if not symbol.endswith("USDT"):
@@ -198,8 +198,27 @@ def build_spot_plan(symbol: str, signal_price: float) -> SpotExecutionPlan:
     take_profit_price = _ceil_step(limit_price * (1.0 + tp_pct / 100.0), tick_size)
 
     minimum_balance = float(os.getenv("LIVE_MIN_UNIFIED_USDT", "5.25"))
-    transfer_state = ensure_unified_usdt(minimum_balance)
-    balance = float(transfer_state.get("unified_usdt") or 0.0)
+    if simulated_balance_usdt is not None:
+        balance = float(simulated_balance_usdt)
+        transfer_state = {
+            "ok": balance >= minimum_balance,
+            "transferred": False,
+            "simulated": True,
+            "unified_usdt": balance,
+        }
+    elif allow_transfer:
+        transfer_state = ensure_unified_usdt(minimum_balance)
+        balance = float(transfer_state.get("unified_usdt") or 0.0)
+    else:
+        balance = unified_usdt_balance()
+        transfer_state = {
+            "ok": balance >= minimum_balance,
+            "transferred": False,
+            "simulated": False,
+            "unified_usdt": balance,
+            "reason": None if balance >= minimum_balance else "transfer_disabled_for_plan",
+        }
+
     if not transfer_state.get("ok"):
         blockers.append("insufficient_unified_usdt")
     if actual_notional > balance:
@@ -305,4 +324,42 @@ def place_spot_plan(plan: SpotExecutionPlan) -> dict:
             for row in executions
         ],
         "plan": plan.to_dict(),
+    }
+
+
+def dry_run_spot_plan(symbol: str, signal_price: float | None = None, simulated_balance_usdt: float = 15.0) -> dict:
+    ticker = spot_ticker(symbol)
+    current_price = float(ticker.get("lastPrice") or ticker.get("ask1Price") or 0.0)
+    chosen_signal = current_price if signal_price is None else float(signal_price)
+    plan = build_spot_plan(
+        symbol,
+        chosen_signal,
+        allow_transfer=False,
+        simulated_balance_usdt=simulated_balance_usdt,
+    )
+    return {
+        "mode": "DRY_RUN",
+        "submitted": False,
+        "transfers_allowed": False,
+        "orders_allowed": False,
+        "simulated_balance_usdt": float(simulated_balance_usdt),
+        "market_price": current_price,
+        "signal_price": chosen_signal,
+        "would_trade": bool(plan.allowed),
+        "plan": plan.to_dict(),
+    }
+
+
+def dry_run_suite(symbol: str = "SOLUSDT", simulated_balance_usdt: float = 15.0) -> dict:
+    ticker = spot_ticker(symbol)
+    current_price = float(ticker.get("lastPrice") or ticker.get("ask1Price") or 0.0)
+    happy = dry_run_spot_plan(symbol, current_price, simulated_balance_usdt)
+    stale_signal = dry_run_spot_plan(symbol, current_price * 0.97, simulated_balance_usdt)
+    tiny_balance = dry_run_spot_plan(symbol, current_price, 2.0)
+    return {
+        "symbol": symbol,
+        "happy_path": happy,
+        "stale_signal_rejection": stale_signal,
+        "insufficient_balance_rejection": tiny_balance,
+        "all_real_actions_disabled": True,
     }
