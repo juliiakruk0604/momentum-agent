@@ -269,9 +269,16 @@ def _metrics(rows):
         std = statistics.stdev(spot)
         lower90 = avg_spot - 1.6448536269514722 * std / math.sqrt(n)
 
+    avg_gross = sum(gross) / n
+    cost_sensitivity = {
+        str(cost): avg_gross - float(cost)
+        for cost in (0.10, 0.17, 0.26, 0.35)
+    }
+
     return {
         "n":n,
-        "avg_gross_pct":sum(gross)/n,
+        "avg_gross_pct":avg_gross,
+        "cost_sensitivity_pct":cost_sensitivity,
         "avg_spot_net_pct":avg_spot,
         "median_spot_net_pct":med_spot,
         "spot_profit_factor":pf,
@@ -302,6 +309,19 @@ def run_v25_evidence(store):
             v=d["validation"]
             d["validation_spot_lift_vs_base_pct"]=None if v["avg_spot_net_pct"] is None or base_v["avg_spot_net_pct"] is None else v["avg_spot_net_pct"]-base_v["avg_spot_net_pct"]
         result["horizons"][str(horizon)]=h
+
+        hyp = {}
+        for name, gate in RESEARCH_HYPOTHESES.items():
+            selected = [r for r in raw if gate(r.get("snapshot") or {})]
+            selected = _nonoverlap(selected, horizon)
+            train, valid = _split(selected, horizon)
+            hyp[name] = {
+                "effective_n": len(selected),
+                "train": _metrics(train),
+                "validation": _metrics(valid),
+                "research_only": True,
+            }
+        result["hypotheses"][str(horizon)] = hyp
 
     promotion = {
         "candidate_promotable": False,
