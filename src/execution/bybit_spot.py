@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
+import uuid
 from dataclasses import dataclass, asdict
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
@@ -82,6 +83,64 @@ def unified_usdt_balance() -> float:
     return 0.0
 
 
+
+def funding_usdt_balance() -> float:
+    base_url, _api_info, _attempts = _find_authenticated_base_url()
+    result = _signed_get(
+        base_url,
+        "/v5/asset/transfer/query-account-coins-balance",
+        {"accountType": "FUND", "coin": "USDT"},
+    ).get("result") or {}
+    for row in result.get("balance") or []:
+        if row.get("coin") == "USDT":
+            return float(row.get("transferBalance") or row.get("walletBalance") or 0.0)
+    return 0.0
+
+
+def ensure_unified_usdt(minimum: float) -> dict:
+    current = unified_usdt_balance()
+    if current >= minimum:
+        return {"ok": True, "transferred": False, "unified_usdt": current}
+
+    if os.getenv("LIVE_AUTO_TRANSFER", "false").lower() not in ("1", "true", "yes", "on"):
+        return {"ok": False, "transferred": False, "unified_usdt": current, "reason": "auto_transfer_disabled"}
+
+    transfer_amount = float(os.getenv("LIVE_TRANSFER_USDT", "5.5"))
+    funding = funding_usdt_balance()
+    if funding + 1e-9 < transfer_amount:
+        return {
+            "ok": False,
+            "transferred": False,
+            "unified_usdt": current,
+            "funding_usdt": funding,
+            "reason": "insufficient_funding_usdt",
+        }
+
+    base_url, _api_info, _attempts = _find_authenticated_base_url()
+    transfer_id = str(uuid.uuid4())
+    result = _signed_post(
+        base_url,
+        "/v5/asset/transfer/inter-transfer",
+        {
+            "transferId": transfer_id,
+            "coin": "USDT",
+            "amount": format(transfer_amount, ".16g"),
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        },
+    ).get("result") or {}
+    time.sleep(1.0)
+    updated = unified_usdt_balance()
+    return {
+        "ok": updated >= minimum,
+        "transferred": True,
+        "transfer_id": transfer_id,
+        "transfer_status": result.get("status"),
+        "amount_usdt": transfer_amount,
+        "unified_usdt": updated,
+        "funding_before_usdt": funding,
+    }
+
 def build_spot_plan(symbol: str, signal_price: float) -> SpotExecutionPlan:
     blockers: list[str] = []
     symbol = str(symbol).upper()
@@ -138,8 +197,10 @@ def build_spot_plan(symbol: str, signal_price: float) -> SpotExecutionPlan:
     stop_price = _floor_step(limit_price * (1.0 - stop_pct / 100.0), tick_size)
     take_profit_price = _ceil_step(limit_price * (1.0 + tp_pct / 100.0), tick_size)
 
-    balance = unified_usdt_balance()
-    if balance < float(os.getenv("LIVE_MIN_UNIFIED_USDT", "5.25")):
+    minimum_balance = float(os.getenv("LIVE_MIN_UNIFIED_USDT", "5.25"))
+    transfer_state = ensure_unified_usdt(minimum_balance)
+    balance = float(transfer_state.get("unified_usdt") or 0.0)
+    if not transfer_state.get("ok"):
         blockers.append("insufficient_unified_usdt")
     if actual_notional > balance:
         blockers.append("notional_exceeds_balance")
