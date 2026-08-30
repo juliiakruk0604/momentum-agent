@@ -87,8 +87,11 @@ def main():
             should_fast_scan = first or fast_last is None or fast_last.get("value") != fast_bucket
 
             if should_fast_scan:
+                previous_fast_row = store.get_runtime("v22_fast_scan")
+                previous_fast = None if previous_fast_row is None else previous_fast_row.get("value")
                 fast_result = scan_fast_v22(
-                    universe_limit=int(os.getenv("V22_UNIVERSE_LIMIT", "25"))
+                    universe_limit=int(os.getenv("V22_UNIVERSE_LIMIT", "25")),
+                    previous_scan=previous_fast,
                 )
                 store.set_runtime("v22_fast_scan", fast_result)
                 store.set_runtime("v22_fast_scan_bucket", fast_bucket)
