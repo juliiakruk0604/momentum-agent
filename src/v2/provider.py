@@ -5,6 +5,12 @@ import requests
 import pandas as pd
 
 
+STABLE_BASES = {
+    "USDC","USDE","USDD","DAI","FDUSD","TUSD","USDP","PYUSD","USD1","RLUSD",
+    "USDS","FRAX","GUSD","LUSD","USDY","USDTB","EURC"
+}
+
+
 class BybitV2Provider:
     BASE = "https://api.bybit.com"
 
@@ -99,9 +105,11 @@ class BybitV2Provider:
 
     def liquid_spot_usdt_symbols(self, limit=40, min_turnover=5_000_000):
         tradable = {
-            x.get("symbol")
+            x.get("symbol"): x
             for x in self.instruments("spot")
-            if x.get("quoteCoin") == "USDT" and x.get("status") == "Trading"
+            if x.get("quoteCoin") == "USDT"
+            and x.get("status") == "Trading"
+            and str(x.get("baseCoin") or "").upper() not in STABLE_BASES
         }
         rows = []
         for t in self.tickers("spot"):
