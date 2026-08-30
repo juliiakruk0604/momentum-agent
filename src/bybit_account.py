@@ -86,7 +86,7 @@ def _find_authenticated_base_url() -> tuple[str, dict, list[dict]]:
             result = _signed_get(base_url, "/v5/user/query-api").get("result") or {}
             return base_url, result, errors
         except Exception as exc:
-            errors.append({"base_url": base_url, "error": str(exc)[:240]})
+            errors.append({"base_url": base_url, "error": _safe_error(exc)})
     raise RuntimeError(f"No Bybit API domain authenticated. attempts={errors}")
 
 
