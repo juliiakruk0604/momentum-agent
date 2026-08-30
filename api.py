@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
+from src.promo_scanner import scan_promos
+from src.bybit_account import funding_balances
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -346,3 +348,27 @@ def promo_candidates(limit: int = 20):
         "execution_enabled": False,
         "candidates": candidates[:max(1, min(limit, 50))],
     }
+
+
+@app.on_event("startup")
+def startup_promo_snapshot():
+    try:
+        promos = scan_promos(limit=50)
+        store.set_runtime("promo_scan", promos)
+        print("PROMO_STARTUP", {
+            "scanned": promos.get("scanned"),
+            "top": (promos.get("candidates") or [])[:3],
+            "execution_enabled": False,
+        }, flush=True)
+    except Exception as exc:
+        print("PROMO_STARTUP_ERROR", repr(exc), flush=True)
+
+    try:
+        funding = funding_balances()
+        store.set_runtime("promo_account_snapshot", {
+            "funding": funding,
+            "execution_enabled": False,
+        })
+        print("FUNDING_BALANCE", funding, flush=True)
+    except Exception as exc:
+        print("FUNDING_BALANCE_ERROR", repr(exc), flush=True)
