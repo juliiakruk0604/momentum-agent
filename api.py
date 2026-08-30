@@ -340,3 +340,26 @@ def bybit_account_test():
         return account_diagnostic()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"bybit_account_test_failed: {exc}")
+
+
+@app.on_event("startup")
+def startup_bybit_diagnostic():
+    if not os.getenv("BYBIT_API_KEY") or not os.getenv("BYBIT_API_SECRET"):
+        print("BYBIT_DIAGNOSTIC not_configured", flush=True)
+        return
+    try:
+        result = account_diagnostic()
+        safe = {
+            "connected": result.get("connected"),
+            "safe_permissions": result.get("safe_permissions"),
+            "read_only": result.get("read_only"),
+            "spot_trade_enabled": result.get("spot_trade_enabled"),
+            "forbidden_permissions": result.get("forbidden_permissions"),
+            "account_type": result.get("account_type"),
+            "total_equity_usd": result.get("total_equity_usd"),
+            "total_available_balance_usd": result.get("total_available_balance_usd"),
+            "execution_enabled": False,
+        }
+        print("BYBIT_DIAGNOSTIC", safe, flush=True)
+    except Exception as exc:
+        print("BYBIT_DIAGNOSTIC_ERROR", repr(exc), flush=True)
