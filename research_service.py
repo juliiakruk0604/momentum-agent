@@ -14,6 +14,7 @@ from src.v22.labels import V22FlowLabeler
 from src.v22.calibration import run_calibration
 from src.v24.labels import V24FeatureLabeler
 from src.v24.calibration import run_v24_calibration
+from src.v25.evidence import run_v25_evidence
 from src.v2.backtest import (
     V2BacktestRunner,
     _strategy_config_snapshot,
@@ -96,6 +97,7 @@ def main():
             "v22_calibration": None,
             "v24_labels": None,
             "v24_calibration": None,
+            "v25_evidence": None,
             "errors": [],
         }
 
@@ -196,6 +198,29 @@ def main():
             cycle["errors"].append(err)
             store.set_runtime("v24_calibration_error", err)
             print("RESEARCH_V24_CALIBRATION_ERROR", repr(exc), flush=True)
+
+        try:
+            v25_evidence = run_v25_evidence(store)
+            cycle["v25_evidence"] = v25_evidence
+            store.set_runtime("v25_evidence_error", None)
+            compact = {
+                h: {
+                    name: {
+                        "n": d.get("effective_n"),
+                        "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                        "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                        "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                    }
+                    for name, d in (x.get("variants") or {}).items()
+                }
+                for h, x in (v25_evidence.get("horizons") or {}).items()
+            }
+            print("RESEARCH_V25_EVIDENCE", json.dumps(compact, default=str), flush=True)
+        except Exception as exc:
+            err = {"component":"v25_evidence","error":repr(exc),"time":str(pd.Timestamp.now(tz="UTC"))}
+            cycle["errors"].append(err)
+            store.set_runtime("v25_evidence_error", err)
+            print("RESEARCH_V25_EVIDENCE_ERROR", repr(exc), flush=True)
 
         if v1 is not None:
             try:
