@@ -76,6 +76,15 @@ FEATURES = {
     "external_positive_lead_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "external_positive_lead_persistence_3s")),
     "cross_exchange_agreement_persistence_3s": ("sequence", "high", lambda s: _nested(s, "sequence_context", "cross_exchange_agreement_persistence_3s")),
     "oi_change_mean_5s_pct": ("sequence", "high", lambda s: _nested(s, "sequence_context", "oi_change_mean_5s_pct")),
+
+    # Primary alpha candidate from the slower V2.2 momentum engine.
+    "base_score": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "score")),
+    "base_ret_3m_pct": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "ret_3m_pct")),
+    "base_ret_5m_pct": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "ret_5m_pct")),
+    "base_rs_5m_pct": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "rs_5m_pct")),
+    "base_volume_acceleration": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "volume_acceleration")),
+    "base_price_acceleration": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "price_acceleration")),
+    "base_current_move_pct": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "current_move_pct")),
 }
 
 
@@ -296,7 +305,7 @@ def calibrate_horizon(store, horizon_seconds):
     rules.sort(key=lambda x: (bool(x["robust"]), float(x["score"])), reverse=True)
 
     grouped = {}
-    for group in ("microstructure", "perp", "cross_exchange", "sequence"):
+    for group in ("base_momentum", "microstructure", "perp", "cross_exchange", "sequence"):
         group_rules = [r for r in rules if r["group"] == group]
         robust = [r for r in group_rules if r["robust"]]
         robust_by_feature = {}
