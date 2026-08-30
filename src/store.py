@@ -482,11 +482,11 @@ class SignalStore:
             float(label.get("final_return_pct") or 0.0),
             float(label.get("mfe_pct") or 0.0),
             float(label.get("mae_pct") or 0.0),
-            int(bool(label.get("hit_0_5"))),
-            int(bool(label.get("hit_1"))),
-            int(bool(label.get("hit_2"))),
-            int(bool(label.get("hit_5"))),
-            int(bool(label.get("hit_10"))),
+            bool(label.get("hit_0_5")),
+            bool(label.get("hit_1")),
+            bool(label.get("hit_2")),
+            bool(label.get("hit_5")),
+            bool(label.get("hit_10")),
             json.dumps(label, default=str),
         )
         self._execute(
