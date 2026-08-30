@@ -8,6 +8,7 @@ from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
 from src.promo_scanner import scan_promos
 from src.bybit_account import funding_balances
+from src.execution.bybit_spot import dry_run_suite
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -372,3 +373,18 @@ def startup_promo_snapshot():
         print("FUNDING_BALANCE", funding, flush=True)
     except Exception as exc:
         print("FUNDING_BALANCE_ERROR", repr(exc), flush=True)
+
+
+@app.get("/dry-run/spot")
+def dry_run_spot(symbol: str = "SOLUSDT", simulated_balance_usdt: float = 15.0):
+    return dry_run_suite(symbol=symbol, simulated_balance_usdt=simulated_balance_usdt)
+
+
+@app.on_event("startup")
+def startup_spot_dry_run():
+    try:
+        result = dry_run_suite("SOLUSDT", 15.0)
+        store.set_runtime("spot_dry_run_suite", result)
+        print("SPOT_DRY_RUN", result, flush=True)
+    except Exception as exc:
+        print("SPOT_DRY_RUN_ERROR", repr(exc), flush=True)
