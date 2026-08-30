@@ -2,6 +2,28 @@ from __future__ import annotations
 
 import os
 
+import pandas as pd
+
+
+def _runtime_age_seconds(row, time_fields=("finished_at","last_updated_at","started_at")):
+    value = None if row is None else row.get("value")
+    if not isinstance(value, dict):
+        return None
+    raw = None
+    for field in time_fields:
+        if value.get(field):
+            raw = value.get(field)
+            break
+    if raw is None:
+        return None
+    try:
+        ts = pd.Timestamp(raw)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return max(0.0, (pd.Timestamp.now(tz="UTC") - ts).total_seconds())
+    except Exception:
+        return None
+
 
 def evaluate_v2_readiness(store):
     reasons = []
@@ -115,6 +137,32 @@ def evaluate_v2_readiness(store):
     if worker_error_value:
         reasons.append("worker_error_present")
 
+    market_error_row = store.get_runtime("v2_market_error")
+    market_error = None if market_error_row is None else market_error_row.get("value")
+    if market_error:
+        reasons.append("v2_market_error_present")
+
+    market_hb = store.get_runtime("v2_market_heartbeat")
+    market_age = _runtime_age_seconds(market_hb)
+    market_stale_after = float(os.getenv("V2_GATE_MARKET_STALE_SECONDS", "90"))
+    if market_age is None:
+        reasons.append("v2_market_heartbeat_missing")
+    elif market_age > market_stale_after:
+        reasons.append("v2_market_heartbeat_stale")
+
+    research_error_row = store.get_runtime("v2_backtest_error")
+    research_error = None if research_error_row is None else research_error_row.get("value")
+    if research_error:
+        reasons.append("v2_backtest_error_present")
+
+    research_hb = store.get_runtime("research_worker_heartbeat")
+    research_age = _runtime_age_seconds(research_hb)
+    research_stale_after = float(os.getenv("V2_GATE_RESEARCH_STALE_SECONDS", "600"))
+    if research_age is None:
+        warnings.append("research_heartbeat_missing")
+    elif research_age > research_stale_after:
+        warnings.append("research_heartbeat_stale")
+
     return {
         "engine": "MomentumAgentV2",
         "live_ready": len(reasons) == 0,
@@ -134,6 +182,12 @@ def evaluate_v2_readiness(store):
             "strategy_version": current_version,
             "closed_trades": shadow_trades,
             "expectancy_usdt": shadow_expectancy,
+        },
+        "services": {
+            "v2_market_age_seconds": market_age,
+            "research_age_seconds": research_age,
+            "v2_market_error": market_error,
+            "v2_backtest_error": research_error,
         },
         "current_scan": {
             "generated_at": None if not isinstance(scan, dict) else scan.get("generated_at"),
