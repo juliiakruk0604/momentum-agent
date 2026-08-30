@@ -3,8 +3,35 @@ from __future__ import annotations
 import os
 
 
-HORIZONS = (5, 15, 30, 60)
-LABEL_VERSION = "price_tick_v2"
+HORIZONS = (5, 15, 30, 60, 120, 300, 900)
+LABEL_VERSION = "price_tick_v3_passage"
+
+
+def _first_passage(rows, entry_ask, tp_pct, sl_pct):
+    tp_level = entry_ask * (1.0 + float(tp_pct) / 100.0)
+    sl_level = entry_ask * (1.0 - float(sl_pct) / 100.0)
+    tp_ms = None
+    sl_ms = None
+    for row in rows:
+        bid = float(row.get("best_bid") or 0.0)
+        if bid <= 0:
+            continue
+        ts = int(row.get("snapshot_ms") or 0)
+        if tp_ms is None and bid >= tp_level:
+            tp_ms = ts
+        if sl_ms is None and bid <= sl_level:
+            sl_ms = ts
+        if tp_ms is not None and sl_ms is not None:
+            break
+    return {
+        "tp_pct": float(tp_pct),
+        "sl_pct": float(sl_pct),
+        "tp_ms": tp_ms,
+        "sl_ms": sl_ms,
+        "tp_before_sl": tp_ms is not None and (sl_ms is None or tp_ms < sl_ms),
+        "sl_before_tp": sl_ms is not None and (tp_ms is None or sl_ms < tp_ms),
+        "neither": tp_ms is None and sl_ms is None,
+    }
 
 
 def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
@@ -46,6 +73,11 @@ def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
     mfe = (high_bid / entry_ask - 1.0) * 100.0
     mae = (low_bid / entry_ask - 1.0) * 100.0
 
+    p035 = _first_passage(rows, entry_ask, 0.35, 0.15)
+    p050 = _first_passage(rows, entry_ask, 0.50, 0.25)
+    p100 = _first_passage(rows, entry_ask, 1.00, 0.50)
+    p200 = _first_passage(rows, entry_ask, 2.00, 0.75)
+
     return {
         "symbol": str(snapshot["symbol"]),
         "snapshot_ms": start_ms,
@@ -63,6 +95,10 @@ def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
         "hit_0_5": mfe >= 0.50,
         "hit_1": mfe >= 1.00,
         "hit_2": mfe >= 2.00,
+        "passage_035_015": p035,
+        "passage_050_025": p050,
+        "passage_100_050": p100,
+        "passage_200_075": p200,
     }
 
 
