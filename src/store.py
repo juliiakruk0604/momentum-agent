@@ -777,21 +777,33 @@ class SignalStore:
         )
 
     def v24_label_candidates(self, horizon_seconds: int, limit: int = 100, min_snapshot_ms: int = 0):
-        cutoff_ms = int(_utc_now().timestamp() * 1000) - int(horizon_seconds) * 1000 - 2000
+        horizon_ms = int(horizon_seconds) * 1000
+        tolerance_ms = int(os.getenv("V24_LABEL_END_TOLERANCE_MS", "1500"))
+        cutoff_ms = int(_utc_now().timestamp() * 1000) - horizon_ms - tolerance_ms
         return self._execute(
             '''SELECT s.* FROM v24_feature_snapshots s
                LEFT JOIN v24_feature_labels l
                  ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
                 AND l.horizon_seconds=?
                WHERE s.snapshot_ms>=? AND s.snapshot_ms<=? AND l.symbol IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM v24_price_ticks p
+                   WHERE p.symbol=s.symbol
+                     AND ABS(p.snapshot_ms - (s.snapshot_ms + ?)) <= ?
+                 )
                ORDER BY s.snapshot_ms ASC LIMIT ?''',
             '''SELECT s.* FROM v24_feature_snapshots s
                LEFT JOIN v24_feature_labels l
                  ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
                 AND l.horizon_seconds=%s
                WHERE s.snapshot_ms>=%s AND s.snapshot_ms<=%s AND l.symbol IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM v24_price_ticks p
+                   WHERE p.symbol=s.symbol
+                     AND ABS(p.snapshot_ms - (s.snapshot_ms + %s)) <= %s
+                 )
                ORDER BY s.snapshot_ms ASC LIMIT %s''',
-            (int(horizon_seconds), int(min_snapshot_ms), cutoff_ms, int(limit)),
+            (int(horizon_seconds), int(min_snapshot_ms), cutoff_ms, horizon_ms, tolerance_ms, int(limit)),
             fetch="all",
         )
 
