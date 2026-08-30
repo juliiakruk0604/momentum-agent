@@ -81,6 +81,34 @@ def _should_scan_market(store, now):
     return last is None or last.get("value") != bucket
 
 
+def _prepare_provenance_rebuild(backfill, store):
+    state = backfill.ensure_state()
+    if not state.get("generator_provenance_missing"):
+        return None
+
+    universe = state.get("universe") or []
+    cursor = int(state.get("cursor") or 0)
+    if cursor < len(universe):
+        return None
+
+    old_dataset_id = str(state.get("dataset_id") or "unknown")
+    archive_key = f"historical_backfill_superseded:{old_dataset_id}"
+    if store.get_runtime(archive_key) is None:
+        archived = {
+            **state,
+            "superseded_at": str(pd.Timestamp.now(tz="UTC")),
+            "superseded_reason": "generator_provenance_missing",
+        }
+        store.set_runtime(archive_key, archived)
+
+    new_state = backfill._new_state()
+    return {
+        "reason": "generator_provenance_missing",
+        "from_dataset_id": old_dataset_id,
+        "to_dataset_id": new_state.get("dataset_id"),
+    }
+
+
 def run_once(provider, store, cfg, universe_limit=100):
     started = pd.Timestamp.now(tz="UTC")
     now = started
@@ -222,6 +250,10 @@ def main():
             result = run_once(provider, store, cfg, args.universe_limit)
             if backfill is not None:
                 try:
+                    rebuild = _prepare_provenance_rebuild(backfill, store)
+                    if rebuild is not None:
+                        store.set_runtime("historical_backfill_rebuild", rebuild)
+                        print("historical_backfill_rebuild", json.dumps(rebuild, default=str), flush=True)
                     backfill_result = backfill.run_batch(backfill_batch_size)
                     store.set_runtime("historical_backfill_last_batch", backfill_result)
                     store.set_runtime("historical_backfill_error", None)
