@@ -34,7 +34,7 @@ def sample():
 
 
 def test_fixed_momentum_hypotheses(monkeypatch):
-    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "1000")
+    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "100000")
     s = sample()
     assert _research_cross_section_momentum(s)
     assert _research_volume_breakout(s)
@@ -42,7 +42,7 @@ def test_fixed_momentum_hypotheses(monkeypatch):
 
 
 def test_cross_section_family_rejects_low_rank(monkeypatch):
-    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "1000")
+    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "100000")
     s = sample()
     s["base_momentum"]["cross_section"]["composite_percentile"] = 0.4
     assert not _research_cross_section_momentum(s)
