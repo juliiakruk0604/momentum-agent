@@ -23,6 +23,7 @@ from src.execution.bybit_spot import build_spot_plan, place_spot_plan
 from src.shadow_portfolio import process_shadow_portfolio
 from src.v2.engine import scan_v2
 from src.v2.shadow import process_v2_shadow
+from src.v2.backtest import V2BacktestRunner
 from src.store import SignalStore
 
 
@@ -443,6 +444,9 @@ def main():
     historical_backfill_enabled = os.getenv("HISTORICAL_BACKFILL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     backfill = HistoricalBackfillRunner(provider, store, cfg) if historical_backfill_enabled else None
     backfill_batch_size = max(1, int(os.getenv("HISTORICAL_BACKFILL_SYMBOLS_PER_SCAN", "1")))
+    v2_backtest_enabled = os.getenv("V2_BACKTEST_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    v2_backtest = V2BacktestRunner(store) if v2_backtest_enabled else None
+    v2_backtest_batch_size = max(1, int(os.getenv("V2_BACKTEST_SYMBOLS_PER_CYCLE", "1")))
     while True:
         try:
             result = run_once(provider, store, cfg, args.universe_limit)
