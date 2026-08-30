@@ -85,6 +85,7 @@ def _close(state, event):
     pos = state.get("open_position")
     if not pos:
         return
+    pos.setdefault("strategy_version", "legacy")
 
     fee_rate = float(os.getenv("V2_FEE_RATE", "0.001"))
     exit_price = float(event["exit_price"])
@@ -284,8 +285,15 @@ def _maybe_open(provider, store, state):
 
 def summary(state):
     start = float(state.get("starting_equity_usdt") or 15.0)
-    metrics = trade_metrics(state.get("trades") or [], starting_equity=start)
-    mc = monte_carlo(state.get("trades") or [], starting_equity=start, simulations=1000) if metrics["n"] >= 5 else None
+    all_trades = state.get("trades") or []
+    current_version = os.getenv("V2_STRATEGY_VERSION", "2.1")
+    current_trades = [
+        t for t in all_trades
+        if str(t.get("strategy_version") or "legacy") == current_version
+    ]
+    metrics_all = trade_metrics(all_trades, starting_equity=start)
+    metrics = trade_metrics(current_trades, starting_equity=start)
+    mc = monte_carlo(current_trades, starting_equity=start, simulations=1000) if metrics["n"] >= 5 else None
     return {
         "mode": "V2_LIVE_SHADOW_1M_PATH",
         "started_at": state.get("started_at"),
@@ -296,8 +304,11 @@ def summary(state):
         "unrealized_pnl_usdt": round(float(state.get("unrealized_pnl_usdt") or 0.0), 8),
         "fees_usdt": round(float(state.get("fees_usdt") or 0.0), 8),
         "open_position": state.get("open_position"),
-        "closed_trades": len(state.get("trades") or []),
+        "closed_trades": len(all_trades),
+        "current_strategy_version": current_version,
+        "current_version_closed_trades": len(current_trades),
         "metrics": metrics,
+        "metrics_all_versions": metrics_all,
         "monte_carlo": mc,
         "last_action": state.get("last_action"),
         "last_rejection": state.get("last_rejection"),
