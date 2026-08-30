@@ -6,15 +6,24 @@ separate services later without changing the codebase.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 
 import uvicorn
 
 
+logger = logging.getLogger(__name__)
+
+
 def run_worker():
-    from worker import main
-    main()
+    try:
+        from worker import main
+
+        main()
+    except BaseException:
+        logger.exception("market worker terminated unexpectedly")
+        os._exit(1)
 
 
 def main():
