@@ -117,6 +117,7 @@ async def main_async():
     last_feature_archive_ms = 0
     last_price_tick_ms = 0
     last_price_prune_ms = 0
+    v25_last_diag_print_ms = 0
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
     linear_stream = BybitLinearContextStream(linear_symbols)
     binance_stream = BinanceTradeStream(binance_symbols)
@@ -243,7 +244,7 @@ async def main_async():
                     enriched.append(sequence_engine.enrich(enriched_item, now_ms))
                 ranked = enriched
 
-                nonlocal last_feature_archive_ms, last_price_tick_ms, last_price_prune_ms
+                nonlocal last_feature_archive_ms, last_price_tick_ms, last_price_prune_ms, v25_last_diag_print_ms
 
                 price_tick_interval_ms = int(
                     max(0.5, float(os.getenv("V24_PRICE_TICK_SECONDS", "1.0"))) * 1000
@@ -332,9 +333,10 @@ async def main_async():
                 }, sort_keys=True, default=str)
                 prev_hybrid = store.get_runtime("v25_hybrid_last_print")
                 prev_hybrid_fp = None if prev_hybrid is None else prev_hybrid.get("value")
-                if hybrid_fp != prev_hybrid_fp:
+                if hybrid_fp != prev_hybrid_fp or now_ms - v25_last_diag_print_ms >= 30_000:
                     print("V25_HYBRID_STATE", json.dumps(hybrid, default=str), flush=True)
                     store.set_runtime("v25_hybrid_last_print", hybrid_fp)
+                    v25_last_diag_print_ms = now_ms
                 fingerprint = json.dumps({
                     "armed": summary.get("armed"),
                     "open": None if not summary.get("open_position") else summary["open_position"].get("symbol"),
