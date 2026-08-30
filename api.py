@@ -9,6 +9,7 @@ from src.execution.exchange_constraints import bybit_linear_constraints
 from src.promo_scanner import scan_promos
 from src.bybit_account import funding_balances
 from src.execution.bybit_spot import dry_run_suite
+from src.shadow_portfolio import summary as shadow_summary
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -388,3 +389,15 @@ def startup_spot_dry_run():
         print("SPOT_DRY_RUN", result, flush=True)
     except Exception as exc:
         print("SPOT_DRY_RUN_ERROR", repr(exc), flush=True)
+
+
+@app.get("/shadow-pnl")
+def shadow_pnl():
+    row = store.get_runtime("shadow_portfolio_v1")
+    if row is None or not isinstance(row.get("value"), dict):
+        return {
+            "mode": "LIVE_SHADOW_REAL_MARKET",
+            "status": "not_started",
+            "starting_equity_usdt": float(os.getenv("SHADOW_START_EQUITY_USDT", "15")),
+        }
+    return shadow_summary(row["value"])
