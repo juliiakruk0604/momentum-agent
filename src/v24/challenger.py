@@ -19,6 +19,9 @@ class EventDecision:
 
 def event_gate(feature: dict, regime: str):
     blockers = []
+    data_regime = str(regime)
+    if data_regime in ("UNKNOWN", "DATA_DEGRADED"):
+        blockers.append("market_data_not_ready")
     score = float(feature.get("microstructure_score") or 0.0)
     spread = float(feature.get("spread_pct") or 999.0)
     depth = min(
