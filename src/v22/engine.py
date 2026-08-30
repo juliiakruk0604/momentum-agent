@@ -24,7 +24,7 @@ def _closed_1m(frame, now=None):
     return x
 
 
-def scan_fast_v22(provider=None, universe_limit=None):
+def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
     provider = provider or BybitV2Provider()
     now = pd.Timestamp.now(tz="UTC")
     universe_limit = int(universe_limit or os.getenv("V22_UNIVERSE_LIMIT", "25"))
@@ -72,6 +72,11 @@ def scan_fast_v22(provider=None, universe_limit=None):
     all_fast.sort(key=lambda x: x.coarse_score, reverse=True)
     coarse_count = sum(1 for x in all_fast if x.coarse_score >= coarse_gate)
     enriched = []
+    previous_by_symbol = {
+        x.get("symbol"): x
+        for x in ((previous_scan or {}).get("candidates") or [])
+        if x.get("symbol")
+    }
 
     for f in all_fast[: int(os.getenv("V22_MICRO_TOP_N", "8"))]:
         try:
@@ -81,6 +86,18 @@ def scan_fast_v22(provider=None, universe_limit=None):
         except Exception as exc:
             errors.append({"symbol": f.symbol, "stage": "flow", "error": repr(exc)[:160]})
             continue
+
+        previous = previous_by_symbol.get(f.symbol) or {}
+        prev_flow = float(previous.get("flow_score") or 0.0)
+        prev_trade = previous.get("trade_flow") or {}
+        prev_book = previous.get("book") or {}
+        flow_score_delta = flow - prev_flow
+        buy_ratio_delta = float(tradef.get("recent_buy_ratio", tradef.get("buy_ratio", 0.5))) - float(
+            prev_trade.get("recent_buy_ratio", prev_trade.get("buy_ratio", 0.5))
+        )
+        book_imbalance_delta = float(bookf.get("book_imbalance") or 0.0) - float(
+            prev_book.get("book_imbalance") or 0.0
+        )
 
         combined = 0.60 * f.coarse_score + 0.40 * flow
         if f.volume_acceleration >= 1.8:
@@ -94,6 +111,9 @@ def scan_fast_v22(provider=None, universe_limit=None):
             )
         if f.rs_5m_pct > 0:
             combined += 3.0
+        combined += min(max(flow_score_delta, 0.0) * 0.08, 4.0)
+        combined += min(max(buy_ratio_delta, 0.0) * 20.0, 3.0)
+        combined += min(max(book_imbalance_delta, 0.0) * 10.0, 2.0)
         combined = round(min(100.0, combined), 2)
 
         rv = max(float(f.realized_vol_20m_pct), 0.03)
@@ -124,8 +144,13 @@ def scan_fast_v22(provider=None, universe_limit=None):
             blockers.append("volume_not_accelerating")
         if flow < flow_gate:
             blockers.append("orderflow_too_weak")
-        if tradef.get("buy_ratio", 0.5) < float(os.getenv("V22_MIN_BUY_RATIO", "0.54")):
+        recent_buy_ratio = float(tradef.get("recent_buy_ratio", tradef.get("buy_ratio", 0.5)))
+        if recent_buy_ratio < float(os.getenv("V22_MIN_BUY_RATIO", "0.54")):
             blockers.append("taker_buy_ratio_low")
+        if float(tradef.get("recent_notional") or 0.0) < float(os.getenv("V22_MIN_RECENT_NOTIONAL_USDT", "3000")):
+            blockers.append("recent_trade_notional_low")
+        if int(tradef.get("recent_trade_count") or 0) < int(os.getenv("V22_MIN_RECENT_TRADES", "15")):
+            blockers.append("recent_trade_count_low")
         if combined < final_gate:
             blockers.append("score_below_gate")
         blockers.extend(decision.blockers)
@@ -140,6 +165,11 @@ def scan_fast_v22(provider=None, universe_limit=None):
             "regime": regime.name,
             "fast_features": f.to_dict(),
             "flow_score": flow,
+            "flow_acceleration": {
+                "flow_score_delta": round(flow_score_delta, 6),
+                "buy_ratio_delta": round(buy_ratio_delta, 6),
+                "book_imbalance_delta": round(book_imbalance_delta, 6),
+            },
             "book": bookf,
             "trade_flow": tradef,
             "risk": decision.to_dict(),
