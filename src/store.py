@@ -874,6 +874,37 @@ class SignalStore:
             fetch="all",
         )
 
+    def v24_labeled_snapshots(self, horizon_seconds: int, limit: int = 20000):
+        rows = self._execute(
+            '''SELECT s.snapshot_ms,s.symbol,s.payload_json,l.payload_json AS label_json
+               FROM v24_feature_snapshots s
+               JOIN v24_feature_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+               WHERE l.horizon_seconds=?
+               ORDER BY s.snapshot_ms ASC LIMIT ?''',
+            '''SELECT s.snapshot_ms,s.symbol,s.payload_json,l.payload_json AS label_json
+               FROM v24_feature_snapshots s
+               JOIN v24_feature_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+               WHERE l.horizon_seconds=%s
+               ORDER BY s.snapshot_ms ASC LIMIT %s''',
+            (int(horizon_seconds), int(limit)),
+            fetch="all",
+        )
+        out = []
+        for row in rows:
+            snapshot = _loads(row.get("payload_json")) or {}
+            label = _loads(row.get("label_json")) or {}
+            if str(label.get("label_version") or "") != "price_tick_v2":
+                continue
+            out.append({
+                "snapshot_ms": int(row.get("snapshot_ms") or 0),
+                "symbol": row.get("symbol"),
+                "snapshot": snapshot,
+                "label": label,
+            })
+        return out
+
     def prune_v24_feature_snapshots(self, older_than_ms: int):
         self._execute(
             "DELETE FROM v24_feature_snapshots WHERE snapshot_ms<?",
