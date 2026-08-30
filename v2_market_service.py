@@ -117,6 +117,27 @@ def main():
             else:
                 heartbeat["fast_scan"] = {"performed": False}
 
+            v23_shadow = process_v23_shadow(store)
+            heartbeat["v23_shadow"] = {
+                "equity": v23_shadow.get("current_equity_usdt"),
+                "net_pnl": v23_shadow.get("net_pnl_usdt"),
+                "open_position": v23_shadow.get("open_position"),
+                "armed": v23_shadow.get("armed"),
+                "closed_trades": v23_shadow.get("closed_trades"),
+                "last_action": v23_shadow.get("last_action"),
+                "last_rejection": v23_shadow.get("last_rejection"),
+            }
+
+            v23_fingerprint = json.dumps({
+                "action": v23_shadow.get("last_action"),
+                "rejection": v23_shadow.get("last_rejection"),
+                "armed": v23_shadow.get("armed"),
+                "equity": v23_shadow.get("current_equity_usdt"),
+            }, sort_keys=True, default=str)
+            if v23_fingerprint != last_v23_fingerprint:
+                print("V23_SHADOW_STATE", json.dumps(heartbeat["v23_shadow"], default=str), flush=True)
+                last_v23_fingerprint = v23_fingerprint
+
             v22_shadow = process_v22_shadow(store)
             heartbeat["v22_shadow"] = {
                 "equity": v22_shadow.get("current_equity_usdt"),
