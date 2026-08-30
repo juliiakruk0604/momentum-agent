@@ -19,12 +19,20 @@ from src.v25.hybrid import V25HybridShadow
 def _latest_v22_map(store):
     row = store.get_runtime("v22_fast_scan")
     value = None if row is None else row.get("value")
-    candidates = [] if not isinstance(value, dict) else (value.get("candidates") or [])
-    return {
+    if not isinstance(value, dict):
+        return {}
+
+    out = {
         str(x.get("symbol")): x
-        for x in candidates
+        for x in (value.get("fast_universe") or [])
         if x.get("symbol")
     }
+    # Enriched top-N candidates contain live flow/book/risk and should
+    # override their fast-only context for the same point in time.
+    for x in value.get("candidates") or []:
+        if x.get("symbol"):
+            out[str(x.get("symbol"))] = x
+    return out
 
 
 class V24Runtime:
