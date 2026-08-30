@@ -11,7 +11,7 @@ from .features import compute_features
 from .provider import BybitV2Provider
 from .regime import detect_regime
 from .risk import cost_adjusted_levels
-from .research import trade_metrics, monte_carlo
+from .research import trade_metrics, monte_carlo, grouped_trade_metrics
 from .setups import evaluate_setups
 from .simulator import simulate_long_path
 
@@ -373,6 +373,13 @@ class V2BacktestRunner:
             "metrics": metrics,
             "score_sensitivity": sensitivity,
             "walk_forward_7d": _fold_metrics(primary, starting_equity=start_eq, fold_days=7),
+            "by_setup": grouped_trade_metrics(primary, "setup", starting_equity=start_eq),
+            "by_regime": grouped_trade_metrics(primary, "regime", starting_equity=start_eq),
+            "by_setup_regime": grouped_trade_metrics(
+                [{**t, "setup_regime": f"{t.get('setup','UNKNOWN')}|{t.get('regime','UNKNOWN')}"} for t in primary],
+                "setup_regime",
+                starting_equity=start_eq,
+            ),
             "monte_carlo": mc,
         }
 
