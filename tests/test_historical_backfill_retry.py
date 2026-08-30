@@ -1,4 +1,4 @@
-from src.historical_backfill import HistoricalBackfillRunner
+from src.historical_backfill import HistoricalBackfillRunner, _generator_fingerprint
 
 
 class FakeStore:
@@ -12,6 +12,7 @@ class FakeStore:
                 {"symbol": "AAAUSDT"},
                 {"symbol": "BBBUSDT"},
             ],
+            "generator_fingerprint": _generator_fingerprint(),
             "complete": True,
         }
         self.runs = {
@@ -27,6 +28,8 @@ class FakeStore:
             self.state = value
 
     def _execute(self, sqlite_sql, pg_sql, params=(), fetch=None):
+        if sqlite_sql.startswith("DELETE FROM historical_events"):
+            return None
         dataset_id = params[0]
         assert dataset_id == "ds"
         rows = []
