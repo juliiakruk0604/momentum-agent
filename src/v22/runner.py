@@ -90,13 +90,27 @@ def evaluate_runner_path(
             breakeven = entry * (1.0 + float(breakeven_buffer_pct) / 100.0)
             trailing = highest * (1.0 - float(trail_pct) / 100.0)
             active_stop = max(breakeven, trailing)
+            # We cannot know intrabar ordering from OHLC. If the same candle also
+            # traded through the newly active stop, assume the adverse valid path.
+            if low <= active_stop:
+                final_time = ts
+                final_price = active_stop * (1.0 - float(exit_slippage_pct) / 100.0)
+                final_reason = "PARTIAL_THEN_TRAIL_SAME_BAR"
+                break
             continue
 
         if partial_hit:
             highest = max(highest, high)
             trailing = highest * (1.0 - float(trail_pct) / 100.0)
             breakeven = entry * (1.0 + float(breakeven_buffer_pct) / 100.0)
-            active_stop = max(active_stop, breakeven, trailing)
+            new_stop = max(active_stop, breakeven, trailing)
+            if low <= new_stop:
+                active_stop = new_stop
+                final_time = ts
+                final_price = active_stop * (1.0 - float(exit_slippage_pct) / 100.0)
+                final_reason = "RUNNER_TRAIL"
+                break
+            active_stop = new_stop
 
     if final_price is None and len(path) >= int(max_hold_minutes) + 1:
         final_time = path.index[-1]
