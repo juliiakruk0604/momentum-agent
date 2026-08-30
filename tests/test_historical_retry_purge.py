@@ -1,4 +1,4 @@
-from src.historical_backfill import HistoricalBackfillRunner
+from src.historical_backfill import HistoricalBackfillRunner, _generator_fingerprint
 
 
 class FakeStore:
@@ -9,6 +9,7 @@ class FakeStore:
             "end": "2026-02-01T00:00:00+00:00",
             "cursor": 1,
             "universe": [{"symbol": "AAAUSDT"}],
+            "generator_fingerprint": _generator_fingerprint(),
             "complete": True,
         }
         self.runs = {
