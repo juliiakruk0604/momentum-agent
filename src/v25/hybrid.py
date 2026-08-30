@@ -19,6 +19,7 @@ def _base_gate(feature: dict, regime: str):
     blockers = []
     base = feature.get("base_momentum") or {}
     ff = base.get("fast_features") or {}
+    cross_section = base.get("cross_section") or {}
 
     if not base:
         blockers.append("no_base_momentum")
@@ -46,6 +47,16 @@ def _base_gate(feature: dict, regime: str):
         blockers.append("price_acceleration_low")
     if cur > float(os.getenv("V25_MAX_CURRENT_EXTENSION_PCT", "0.65")):
         blockers.append("base_too_extended")
+
+    if cross_section:
+        if _safe_float(cross_section.get("composite_percentile")) < float(
+            os.getenv("V25_MIN_COMPOSITE_PERCENTILE", "0.72")
+        ):
+            blockers.append("cross_section_rank_low")
+        if _safe_float(cross_section.get("rs_5m_percentile")) < float(
+            os.getenv("V25_MIN_RS_PERCENTILE", "0.65")
+        ):
+            blockers.append("cross_section_rs_rank_low")
 
     return blockers
 
