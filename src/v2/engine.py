@@ -10,14 +10,30 @@ from .risk import microstructure, risk_decision
 from .setups import evaluate_setups
 
 
+def _closed_15m(frame, now=None):
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    x = frame.sort_index()
+    if x.empty:
+        return x
+    # Bybit can include the currently-forming candle. Signals may only use data
+    # that was fully available at decision time.
+    last_open = pd.Timestamp(x.index[-1])
+    if last_open + pd.Timedelta(minutes=15) > now:
+        x = x.iloc[:-1]
+    return x
+
+
 def scan_v2(provider=None, universe_limit=None):
     provider = provider or BybitV2Provider()
     limit = int(universe_limit or os.getenv("V2_UNIVERSE_LIMIT", "40"))
     min_turnover = float(os.getenv("V2_MIN_TURNOVER_USDT", "5000000"))
     min_score = float(os.getenv("V2_MIN_SCORE", "65"))
 
-    btc = provider.kline("BTCUSDT", "15", 120, category="spot")
-    eth = provider.kline("ETHUSDT", "15", 120, category="spot")
+    now = pd.Timestamp.now(tz="UTC")
+    btc = _closed_15m(provider.kline("BTCUSDT", "15", 121, category="spot"), now)
+    eth = _closed_15m(provider.kline("ETHUSDT", "15", 121, category="spot"), now)
     regime = detect_regime(btc, eth)
 
     ticker_map = {
@@ -33,7 +49,7 @@ def scan_v2(provider=None, universe_limit=None):
 
     for symbol in symbols:
         try:
-            bars = provider.kline(symbol, "15", 120, category="spot")
+            bars = _closed_15m(provider.kline(symbol, "15", 121, category="spot"), now)
             ticker = ticker_map.get(symbol) or {}
             turnover = float(ticker.get("turnover24h") or 0.0)
             f = compute_features(symbol, bars, btc, eth, turnover)
