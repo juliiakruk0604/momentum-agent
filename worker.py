@@ -19,6 +19,7 @@ from src.providers.bybit_public import BybitPublicProvider
 from src.readiness import combine_readiness
 from src.promo_scanner import scan_promos
 from src.bybit_account import account_diagnostic, funding_balances
+from src.execution.bybit_spot import build_spot_plan, place_spot_plan
 from src.store import SignalStore
 
 
@@ -153,6 +154,89 @@ def process_promo_scan(store, now):
         "top_count": len(top),
     }
 
+
+def process_micro_live(store):
+    today = pd.Timestamp.now(tz="UTC").date().isoformat()
+    last_trade = store.get_runtime("micro_live_last_filled_trade_date")
+    if last_trade is not None and last_trade.get("value") == today:
+        return {"action": "NO_TRADE", "reason": "daily_trade_limit_reached"}
+
+    readiness = store.micro_live_readiness()
+    historical = readiness.get("historical") or {}
+    status = historical.get("status")
+    research_gate = ((historical.get("oos") or {}).get("research_gate") or {})
+
+    if status != "complete":
+        return {
+            "action": "NO_TRADE",
+            "reason": "historical_backfill_not_complete",
+            "cursor": historical.get("cursor"),
+            "universe_size": historical.get("universe_size"),
+        }
+
+    if not research_gate.get("passed", False):
+        return {
+            "action": "NO_TRADE",
+            "reason": "historical_research_gate_not_passed",
+            "gate_reasons": research_gate.get("reasons") or [],
+        }
+
+    if not readiness.get("ready"):
+        return {
+            "action": "NO_TRADE",
+            "reason": "micro_live_gate_not_ready",
+            "gate_reasons": readiness.get("reasons") or [],
+        }
+
+    eligible = readiness.get("eligible_candidates") or []
+    if not eligible:
+        return {"action": "NO_TRADE", "reason": "no_fresh_candidate"}
+
+    candidate = eligible[0]
+    try:
+        plan = build_spot_plan(candidate["symbol"], float(candidate["signal_price"]))
+    except Exception as exc:
+        result = {
+            "action": "NO_TRADE",
+            "reason": "spot_preflight_error",
+            "candidate": candidate,
+            "error": repr(exc),
+        }
+        store.set_runtime("micro_live_preflight", result)
+        return result
+
+    preflight = {
+        "action": "READY" if plan.allowed else "NO_TRADE",
+        "candidate": candidate,
+        "plan": plan.to_dict(),
+        "execution_enabled": os.getenv("LIVE_SPOT_EXECUTION", "false"),
+        "checked_at": str(pd.Timestamp.now(tz="UTC")),
+    }
+    store.set_runtime("micro_live_preflight", preflight)
+
+    if not plan.allowed:
+        return preflight
+
+    result = place_spot_plan(plan)
+    audit = {
+        "candidate": candidate,
+        "result": result,
+        "executed_at": str(pd.Timestamp.now(tz="UTC")),
+    }
+    store.set_runtime("micro_live_last_execution", audit)
+
+    try:
+        filled = float(result.get("cum_exec_qty") or 0.0) > 0
+    except Exception:
+        filled = False
+    if filled:
+        store.set_runtime("micro_live_last_filled_trade_date", today)
+        print("MICRO_LIVE_FILLED", json.dumps(audit, default=str), flush=True)
+        return {"action": "FILLED", **audit}
+
+    print("MICRO_LIVE_NO_FILL", json.dumps(audit, default=str), flush=True)
+    return {"action": "NO_FILL", **audit}
+
 def run_once(provider, store, cfg, universe_limit=100):
     started = pd.Timestamp.now(tz="UTC")
     now = started
@@ -255,6 +339,11 @@ def run_once(provider, store, cfg, universe_limit=100):
 
     label_stats = process_labels(provider, store, cfg, now)
     try:
+        micro_live_stats = process_micro_live(store)
+    except Exception as exc:
+        micro_live_stats = {"action": "NO_TRADE", "reason": "micro_live_exception", "error": repr(exc)}
+        print("micro_live_error", repr(exc), flush=True)
+    try:
         promo_stats = process_promo_scan(store, now)
     except Exception as exc:
         promo_stats = {"performed": False, "error": repr(exc)}
@@ -272,6 +361,7 @@ def run_once(provider, store, cfg, universe_limit=100):
         "continuation_errors": continuation_errors,
         **label_stats,
         "promo_scan": promo_stats,
+        "micro_live": micro_live_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
     today = pd.Timestamp.now(tz="UTC").date().isoformat()
