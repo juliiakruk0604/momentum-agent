@@ -85,6 +85,10 @@ FEATURES = {
     "base_volume_acceleration": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "volume_acceleration")),
     "base_price_acceleration": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "price_acceleration")),
     "base_current_move_pct": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "fast_features", "current_move_pct")),
+    "base_rs_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "rs_5m_percentile")),
+    "base_ret3_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "ret_3m_percentile")),
+    "base_volume_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "volume_accel_percentile")),
+    "base_composite_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "composite_percentile")),
 }
 
 
