@@ -42,6 +42,42 @@ def _wilson_lower(hits, n, z=1.6448536269514722):
     return max(0.0, (centre - margin) / denom)
 
 
+def _row_cost_pct(row):
+    snapshot = row.get("snapshot") or {}
+    risk = snapshot.get("risk") or {}
+    value = _f(risk.get("execution_cost_pct"))
+    if value is not None and value >= 0:
+        return value
+    return float(os.getenv("V22_CALIBRATION_DEFAULT_ROUNDTRIP_COST_PCT", "0.30"))
+
+
+def _non_overlapping(rows, horizon_minutes):
+    gap = pd.Timedelta(minutes=int(horizon_minutes))
+    last = {}
+    out = []
+    for row in sorted(rows, key=lambda r: pd.Timestamp(r["snapshot_time"])):
+        ts = pd.Timestamp(row["snapshot_time"])
+        symbol = str(row.get("symbol") or "")
+        prev = last.get(symbol)
+        if prev is not None and ts - prev < gap:
+            continue
+        out.append(row)
+        last[symbol] = ts
+    return out
+
+
+def _purged_split(rows, horizon_minutes):
+    if len(rows) < 2:
+        return rows, []
+    ordered = sorted(rows, key=lambda r: pd.Timestamp(r["snapshot_time"]))
+    idx = max(1, min(len(ordered)-1, int(len(ordered) * float(os.getenv("V22_CALIBRATION_TRAIN_FRACTION", "0.70")))))
+    split_ts = pd.Timestamp(ordered[idx]["snapshot_time"])
+    embargo = pd.Timedelta(minutes=int(horizon_minutes))
+    train = [r for r in ordered if pd.Timestamp(r["snapshot_time"]) <= split_ts - embargo]
+    valid = [r for r in ordered if pd.Timestamp(r["snapshot_time"]) >= split_ts + embargo]
+    return train, valid
+
+
 def _metrics(rows):
     if not rows:
         return {
@@ -55,12 +91,18 @@ def _metrics(rows):
         }
     labels = [r["label"] for r in rows]
     n = len(labels)
+    net_returns = [
+        float(r["label"].get("final_return_pct") or 0.0) - _row_cost_pct(r)
+        for r in rows
+    ]
     h05 = sum(bool(x.get("hit_0_5")) for x in labels)
     h1 = sum(bool(x.get("hit_1")) for x in labels)
     h2 = sum(bool(x.get("hit_2")) for x in labels)
     return {
         "n": n,
         "avg_final_return_pct": sum(float(x.get("final_return_pct") or 0.0) for x in labels) / n,
+        "avg_net_return_pct": sum(net_returns) / n,
+        "positive_net_fraction": sum(x > 0.0 for x in net_returns) / n,
         "avg_mfe_pct": sum(float(x.get("mfe_pct") or 0.0) for x in labels) / n,
         "avg_mae_pct": sum(float(x.get("mae_pct") or 0.0) for x in labels) / n,
         "hit_0_5_count": h05,
@@ -123,6 +165,10 @@ def _score_rule(train_metrics, valid_metrics, base_train, base_valid):
     mfe_v = float(valid_metrics.get("avg_mfe_pct") or 0.0)
     ret_t = float(train_metrics.get("avg_final_return_pct") or 0.0)
     ret_v = float(valid_metrics.get("avg_final_return_pct") or 0.0)
+    net_t = float(train_metrics.get("avg_net_return_pct") or 0.0)
+    net_v = float(valid_metrics.get("avg_net_return_pct") or 0.0)
+    base_net_t = float(base_train.get("avg_net_return_pct") or 0.0)
+    base_net_v = float(base_valid.get("avg_net_return_pct") or 0.0)
     base_mfe_t = float(base_train.get("avg_mfe_pct") or 0.0)
     base_mfe_v = float(base_valid.get("avg_mfe_pct") or 0.0)
 
@@ -140,12 +186,18 @@ def _score_rule(train_metrics, valid_metrics, base_train, base_valid):
         and mfe_v > base_mfe_v
         and ret_t >= 0.0
         and ret_v > 0.0
+        and net_t > 0.0
+        and net_v > 0.0
+        and net_t > base_net_t
+        and net_v > base_net_v
     )
     score = (
         valid_lift * 3.0
         + train_lift
         + max(mfe_v - base_mfe_v, 0.0)
         + max(ret_v, 0.0) * 0.5
+        + max(net_v - base_net_v, 0.0) * 2.0
+        + max(net_t - base_net_t, 0.0)
     )
     return {
         "robust": robust,
@@ -158,23 +210,36 @@ def _score_rule(train_metrics, valid_metrics, base_train, base_valid):
 
 
 def calibrate_horizon(store, horizon_minutes=5):
-    rows = store.v22_labeled_snapshots(int(horizon_minutes), limit=10000)
+    raw_rows = store.v22_labeled_snapshots(int(horizon_minutes), limit=10000)
+    rows = _non_overlapping(raw_rows, int(horizon_minutes))
     n = len(rows)
-    min_total = int(os.getenv("V22_CALIBRATION_MIN_ROWS", "120"))
+    min_total = int(os.getenv("V22_CALIBRATION_MIN_EFFECTIVE_ROWS", "80"))
     if n < min_total:
         return {
             "horizon_minutes": int(horizon_minutes),
             "status": "collecting",
+            "raw_n": len(raw_rows),
             "n": n,
             "minimum_required": min_total,
+            "sampling": "nonoverlap_purged_cost_aware",
             "baseline": _metrics(rows),
             "rules": [],
         }
 
-    split = max(1, int(n * float(os.getenv("V22_CALIBRATION_TRAIN_FRACTION", "0.70"))))
-    split = min(split, n - 1)
-    train = rows[:split]
-    valid = rows[split:]
+    train, valid = _purged_split(rows, int(horizon_minutes))
+    if len(train) < int(os.getenv("V22_CALIBRATION_MIN_TRAIN_ROWS", "40")) or len(valid) < int(
+        os.getenv("V22_CALIBRATION_MIN_VALID_ROWS", "20")
+    ):
+        return {
+            "horizon_minutes": int(horizon_minutes),
+            "status": "collecting_after_purge",
+            "raw_n": len(raw_rows),
+            "n": n,
+            "train_n": len(train),
+            "validation_n": len(valid),
+            "sampling": "nonoverlap_purged_cost_aware",
+            "rules": [],
+        }
     base_train = _metrics(train)
     base_valid = _metrics(valid)
 
@@ -214,7 +279,9 @@ def calibrate_horizon(store, horizon_minutes=5):
     return {
         "horizon_minutes": int(horizon_minutes),
         "status": "evaluated",
+        "raw_n": len(raw_rows),
         "n": n,
+        "sampling": "nonoverlap_purged_cost_aware",
         "train_n": len(train),
         "validation_n": len(valid),
         "baseline_train": base_train,
