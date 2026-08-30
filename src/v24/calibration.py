@@ -260,25 +260,87 @@ def _evaluate_rule(train_m, valid_m, base_train, base_valid):
     }
 
 
+def _is_research_event(row):
+    s = row.get("snapshot") or {}
+    if s.get("base_momentum"):
+        return True
+    if _f(s.get("microstructure_score")) is not None and _f(s.get("microstructure_score")) >= float(
+        os.getenv("V24_EVENT_MIN_MICRO_SCORE", "72")
+    ):
+        return True
+    move5 = abs(_f(s.get("price_move_5s_pct")) or 0.0)
+    if move5 >= float(os.getenv("V24_EVENT_MIN_ABS_MOVE_5S_PCT", "0.04")):
+        return True
+    seq = s.get("sequence_context") or {}
+    if abs(_f(seq.get("score_delta_3s")) or 0.0) >= float(
+        os.getenv("V24_EVENT_MIN_SCORE_DELTA_3S", "10")
+    ):
+        return True
+    return False
+
+
+def _non_overlapping_events(rows, horizon_seconds):
+    gap_ms = max(1000, int(horizon_seconds) * 1000)
+    last_by_symbol = {}
+    out = []
+    for row in sorted(rows, key=lambda x: int(x.get("snapshot_ms") or 0)):
+        if not _is_research_event(row):
+            continue
+        symbol = str(row.get("symbol") or "")
+        ts = int(row.get("snapshot_ms") or 0)
+        last = int(last_by_symbol.get(symbol) or 0)
+        if last and ts - last < gap_ms:
+            continue
+        out.append(row)
+        last_by_symbol[symbol] = ts
+    return out
+
+
+def _purged_split(rows, horizon_seconds):
+    if len(rows) < 2:
+        return rows, []
+    ordered = sorted(rows, key=lambda x: int(x.get("snapshot_ms") or 0))
+    split_index = max(1, min(len(ordered) - 1, int(len(ordered) * float(os.getenv("V24_CAL_TRAIN_FRACTION", "0.70")))))
+    split_ts = int(ordered[split_index].get("snapshot_ms") or 0)
+    embargo_ms = int(horizon_seconds) * 1000
+    train = [r for r in ordered if int(r.get("snapshot_ms") or 0) <= split_ts - embargo_ms]
+    valid = [r for r in ordered if int(r.get("snapshot_ms") or 0) >= split_ts + embargo_ms]
+    return train, valid
+
+
 def calibrate_horizon(store, horizon_seconds):
-    rows = store.v24_labeled_snapshots(int(horizon_seconds), limit=20000)
+    raw_rows = store.v24_labeled_snapshots(int(horizon_seconds), limit=20000)
+    rows = _non_overlapping_events(raw_rows, int(horizon_seconds))
     n = len(rows)
-    min_total = int(os.getenv("V24_CAL_MIN_ROWS", "200"))
+    min_total = int(os.getenv("V24_CAL_MIN_EVENT_ROWS", "80"))
     if n < min_total:
         return {
             "status": "collecting",
             "horizon_seconds": int(horizon_seconds),
+            "raw_n": len(raw_rows),
             "n": n,
             "minimum_required": min_total,
+            "sampling": "event_nonoverlap_purged",
             "baseline": _metrics(rows),
             "groups": {},
             "auto_apply": False,
         }
 
-    split = max(1, int(n * float(os.getenv("V24_CAL_TRAIN_FRACTION", "0.70"))))
-    split = min(split, n - 1)
-    train = rows[:split]
-    valid = rows[split:]
+    train, valid = _purged_split(rows, int(horizon_seconds))
+    if len(train) < int(os.getenv("V24_CAL_MIN_TRAIN_ROWS", "40")) or len(valid) < int(
+        os.getenv("V24_CAL_MIN_VALID_ROWS", "20")
+    ):
+        return {
+            "status": "collecting_after_purge",
+            "horizon_seconds": int(horizon_seconds),
+            "raw_n": len(raw_rows),
+            "n": n,
+            "train_n": len(train),
+            "validation_n": len(valid),
+            "sampling": "event_nonoverlap_purged",
+            "groups": {},
+            "auto_apply": False,
+        }
     base_train = _metrics(train)
     base_valid = _metrics(valid)
 
@@ -325,7 +387,9 @@ def calibrate_horizon(store, horizon_seconds):
     return {
         "status": "evaluated",
         "horizon_seconds": int(horizon_seconds),
+        "raw_n": len(raw_rows),
         "n": n,
+        "sampling": "event_nonoverlap_purged",
         "train_n": len(train),
         "validation_n": len(valid),
         "baseline_train": base_train,
