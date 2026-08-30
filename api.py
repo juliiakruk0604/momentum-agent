@@ -332,3 +332,17 @@ def execution_preflight(equity_usdt: float):
         "plan": plan.to_dict(),
         "execution_enabled": False,
     }
+
+
+@app.get("/promo-candidates")
+def promo_candidates(limit: int = 20):
+    runtime = store.get_runtime("promo_scan") or {}
+    value = runtime.get("value") or {}
+    candidates = value.get("candidates") or []
+    return {
+        "source": value.get("source"),
+        "generated_at_ms": value.get("generated_at_ms"),
+        "scanned": value.get("scanned"),
+        "execution_enabled": False,
+        "candidates": candidates[:max(1, min(limit, 50))],
+    }
