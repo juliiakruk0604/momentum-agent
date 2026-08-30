@@ -7,3 +7,4 @@ uvicorn>=0.30
 pydantic>=2.8
 psycopg[binary]>=3.2
 pytest>=8.0
+websockets>=15.0
