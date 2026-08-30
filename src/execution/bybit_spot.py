@@ -231,8 +231,14 @@ def place_spot_plan(plan: SpotExecutionPlan) -> dict:
     permissions = api_info.get("permissions") or {}
     wallet_perms = set(permissions.get("Wallet") or [])
     spot_perms = set(permissions.get("Spot") or [])
+    contract_perms = set(permissions.get("ContractTrade") or [])
+    options_perms = set(permissions.get("Options") or [])
     if "Withdraw" in wallet_perms:
         return {"submitted": False, "reason": "withdraw_permission_present", "plan": plan.to_dict()}
+    if contract_perms:
+        return {"submitted": False, "reason": "contract_permission_present", "plan": plan.to_dict()}
+    if options_perms:
+        return {"submitted": False, "reason": "options_permission_present", "plan": plan.to_dict()}
     if "SpotTrade" not in spot_perms:
         return {"submitted": False, "reason": "spot_trade_permission_missing", "plan": plan.to_dict()}
 
