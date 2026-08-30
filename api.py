@@ -13,6 +13,7 @@ from src.shadow_portfolio import summary as shadow_summary
 from src.v2.shadow import summary as v2_shadow_summary
 from src.v2.readiness import evaluate_v2_readiness
 from src.v22.shadow import summary as v22_shadow_summary
+from src.v22.readiness import evaluate_v22_readiness
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -501,3 +502,13 @@ def v22_replay_status():
         "error": None if error_row is None else error_row.get("value"),
         "live_execution": False,
     }
+
+
+@app.get("/v22/readiness")
+def v22_readiness():
+    return evaluate_v22_readiness(store)
+
+
+@app.get("/v22/flow-stats")
+def v22_flow_stats():
+    return store.v22_flow_snapshot_stats()
