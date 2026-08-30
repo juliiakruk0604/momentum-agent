@@ -86,3 +86,35 @@ def test_runner_can_leave_open_after_partial():
     )
     assert out.partial_hit is True
     assert out.status in ("OPEN","CLOSED")
+
+
+def test_v22_flow_snapshot_store(tmp_path):
+    from src.store import SignalStore
+    store = SignalStore(path=str(tmp_path / "v22.db"), database_url=None)
+    store.upsert_v22_flow_snapshot({
+        "snapshot_time": "2026-08-30T09:20:00+00:00",
+        "symbol": "BTCUSDT",
+        "signal_time": "2026-08-30T09:19:00+00:00",
+        "signal_price": 78000,
+        "score": 50,
+        "regime": "CHOP",
+        "action": "WATCH",
+        "fast_features": {"price": 78000},
+        "book": {"book_imbalance": 0.1},
+        "trade_flow": {"recent_buy_ratio": 0.55},
+    })
+    stats = store.v22_flow_snapshot_stats()
+    assert stats["snapshots"] == 1
+    assert stats["symbols"] == 1
+
+
+def test_recent_trade_flow_prefers_recent_window():
+    from src.v22.orderflow import trade_flow_features
+    trades = [
+        {"time": 1_000, "price": 100, "size": 20, "side": "Sell"},
+        {"time": 35_000, "price": 100, "size": 5, "side": "Buy"},
+        {"time": 36_000, "price": 100, "size": 5, "side": "Buy"},
+    ]
+    out = trade_flow_features(trades)
+    assert out["recent_buy_ratio"] > out["buy_ratio"]
+    assert out["recent_notional"] > 0
