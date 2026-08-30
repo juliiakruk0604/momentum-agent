@@ -118,6 +118,59 @@ async def main_async():
             print("V24_STREAM_STATUS", json.dumps(status, default=str), flush=True)
             await asyncio.sleep(max(10, int(os.getenv("V24_STATUS_SECONDS", "30"))))
 
+    async def parity_loop():
+        interval = max(10, int(os.getenv("V24_PARITY_SECONDS", "30")))
+        tolerance_bps = float(os.getenv("V24_PARITY_MAX_BPS", "5"))
+        max_age_ms = int(float(os.getenv("V24_MAX_EVENT_AGE_SECONDS", "3")) * 1000)
+        while True:
+            now_ms = int(time.time() * 1000)
+            checks = []
+            healthy = True
+            for symbol in symbols[: min(len(symbols), int(os.getenv("V24_PARITY_SYMBOLS", "4")))]:
+                local = stream.books.get(symbol)
+                local_snap = {} if local is None else local.snapshot(5)
+                try:
+                    rest = provider.orderbook(symbol, limit=25)
+                    rb = rest.get("bids") or []
+                    ra = rest.get("asks") or []
+                    rest_bid = float(rb[0][0]) if rb else 0.0
+                    rest_ask = float(ra[0][0]) if ra else 0.0
+                except Exception as exc:
+                    checks.append({"symbol":symbol,"ok":False,"error":repr(exc)[:120]})
+                    healthy = False
+                    continue
+                local_bid = float(local_snap.get("best_bid") or 0.0)
+                local_ask = float(local_snap.get("best_ask") or 0.0)
+                bid_bps = 9999.0 if rest_bid <= 0 else abs(local_bid / rest_bid - 1.0) * 10000.0
+                ask_bps = 9999.0 if rest_ask <= 0 else abs(local_ask / rest_ask - 1.0) * 10000.0
+                age_ms = now_ms - int(local_snap.get("exchange_ts_ms") or 0)
+                ok = (
+                    bool(local_snap.get("ready"))
+                    and bid_bps <= tolerance_bps
+                    and ask_bps <= tolerance_bps
+                    and 0 <= age_ms <= max_age_ms
+                )
+                if not ok:
+                    healthy = False
+                checks.append({
+                    "symbol":symbol,
+                    "ok":ok,
+                    "bid_diff_bps":bid_bps,
+                    "ask_diff_bps":ask_bps,
+                    "event_age_ms":age_ms,
+                })
+            payload = {
+                "healthy":healthy,
+                "checked_at_ms":now_ms,
+                "checks":checks,
+                "max_diff_bps":tolerance_bps,
+                "max_event_age_ms":max_age_ms,
+            }
+            store.set_runtime("v24_stream_parity", payload)
+            if not healthy:
+                print("V24_PARITY_DEGRADED", json.dumps(payload, default=str), flush=True)
+            await asyncio.sleep(interval)
+
     async def decision_loop():
         last_print = None
         while True:
@@ -175,7 +228,12 @@ async def main_async():
                     ],
                     "auto_weight_in_signal": False,
                 })
-                summary = runtime.shadow.process(ranked, runtime.current_regime())
+                parity_row = store.get_runtime("v24_stream_parity")
+                parity = None if parity_row is None else parity_row.get("value")
+                regime = runtime.current_regime()
+                if isinstance(parity, dict) and parity.get("healthy") is False:
+                    regime = "DATA_DEGRADED"
+                summary = runtime.shadow.process(ranked, regime)
                 store.set_runtime("v24_event_shadow_summary", summary)
                 fingerprint = json.dumps({
                     "armed": summary.get("armed"),
@@ -193,6 +251,7 @@ async def main_async():
         linear_stream.run_forever(),
         binance_stream.run_forever(),
         status_loop(),
+        parity_loop(),
         decision_loop(),
     )
 
