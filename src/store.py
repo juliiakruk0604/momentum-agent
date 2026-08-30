@@ -988,6 +988,34 @@ class SignalStore:
                 continue
 
             base_payload = _loads(row.get("base_payload_json")) or {}
+            if base_payload and not base_payload.get("normalized_momentum"):
+                fast = base_payload.get("fast_features") or {}
+                try:
+                    rv = float(fast.get("realized_vol_20m_pct") or 0.0)
+                    ret3 = float(fast.get("ret_3m_pct") or 0.0)
+                    ret5 = float(fast.get("ret_5m_pct") or 0.0)
+                    rs5 = float(fast.get("rs_5m_pct") or 0.0)
+                    base_payload = {
+                        **base_payload,
+                        "normalized_momentum": {
+                            "ret_3m_over_rv": round(
+                                ret3 / max(rv * (3.0 ** 0.5), 0.03),
+                                6,
+                            ),
+                            "ret_5m_over_rv": round(
+                                ret5 / max(rv * (5.0 ** 0.5), 0.03),
+                                6,
+                            ),
+                            "rs_5m_over_rv": round(
+                                rs5 / max(rv * (5.0 ** 0.5), 0.03),
+                                6,
+                            ),
+                        },
+                        "normalized_momentum_source": "reconstructed_from_point_in_time_fast_features",
+                    }
+                except Exception:
+                    pass
+
             # Preserve the base context captured directly in V2.4 when present.
             # Otherwise use only the SQL-selected point-in-time V2.2 snapshot.
             if not snapshot.get("base_momentum") and base_payload:
