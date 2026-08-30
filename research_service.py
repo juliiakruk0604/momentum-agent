@@ -13,6 +13,7 @@ from src.v22.replay import V22RunnerReplay
 from src.v22.labels import V22FlowLabeler
 from src.v22.calibration import run_calibration
 from src.v24.labels import V24FeatureLabeler
+from src.v24.calibration import run_v24_calibration
 from src.v2.backtest import (
     V2BacktestRunner,
     _strategy_config_snapshot,
@@ -94,6 +95,7 @@ def main():
             "v22_labels": None,
             "v22_calibration": None,
             "v24_labels": None,
+            "v24_calibration": None,
             "errors": [],
         }
 
@@ -169,6 +171,31 @@ def main():
                 cycle["errors"].append(err)
                 store.set_runtime("v24_feature_labeler_error", err)
                 print("RESEARCH_V24_LABELS_ERROR", repr(exc), flush=True)
+
+        try:
+            v24_cal = run_v24_calibration(store)
+            cycle["v24_calibration"] = v24_cal
+            store.set_runtime("v24_calibration_error", None)
+            compact = {
+                h: {
+                    "status": x.get("status"),
+                    "n": x.get("n"),
+                    "groups": {
+                        g: {
+                            "stable_features": d.get("stable_features"),
+                            "stable_rule_count": d.get("stable_rule_count"),
+                        }
+                        for g, d in (x.get("groups") or {}).items()
+                    },
+                }
+                for h, x in (v24_cal.get("horizons") or {}).items()
+            }
+            print("RESEARCH_V24_CALIBRATION", json.dumps(compact, default=str), flush=True)
+        except Exception as exc:
+            err = {"component": "v24_calibration", "error": repr(exc), "time": str(pd.Timestamp.now(tz="UTC"))}
+            cycle["errors"].append(err)
+            store.set_runtime("v24_calibration_error", err)
+            print("RESEARCH_V24_CALIBRATION_ERROR", repr(exc), flush=True)
 
         if v1 is not None:
             try:
