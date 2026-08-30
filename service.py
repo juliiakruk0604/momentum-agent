@@ -55,6 +55,10 @@ def main():
     if mode == "worker":
         run_worker()
         return
+    if mode == "research":
+        from research_service import main as run_research
+        run_research()
+        return
     if mode == "all":
         t = threading.Thread(target=run_worker, name="market-worker", daemon=True)
         t.start()
