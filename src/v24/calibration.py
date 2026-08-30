@@ -439,7 +439,7 @@ def run_v24_calibration(store):
         "auto_apply": False,
         "horizons": {},
     }
-    for horizon in (5, 15, 30, 60, 120, 300, 900):
+    for horizon in (5, 15, 30, 60, 120, 300, 900, 1800):
         result["horizons"][str(horizon)] = calibrate_horizon(store, horizon)
     store.set_runtime("v24_empirical_calibration", result)
     return result
