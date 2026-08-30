@@ -117,6 +117,7 @@ class V25HybridShadow:
         self.store = store
         row = store.get_runtime(self.KEY)
         self.state = row.get("value") if row and isinstance(row.get("value"), dict) else self._new()
+        self.last_diagnostics = {}
 
     def _new(self):
         start = float(os.getenv("V25_SHADOW_START_EQUITY_USDT", "15"))
@@ -206,6 +207,34 @@ class V25HybridShadow:
         value = _safe_float(pos.get("qty")) * marked
         hypothetical_exit_fee = value * fee_rate
         self.state["equity_usdt"] = _safe_float(self.state.get("cash_usdt")) + value - hypothetical_exit_fee
+
+    def _diagnostics(self, ranked, regime):
+        counts = {}
+        eligible = []
+        inspected = []
+        for feature in ranked:
+            blockers = hybrid_gate(feature, regime)
+            for blocker in blockers:
+                counts[blocker] = counts.get(blocker, 0) + 1
+            base = feature.get("base_momentum") or {}
+            row = {
+                "symbol": feature.get("symbol"),
+                "base_score": _safe_float(base.get("score")) if base else None,
+                "micro_score": _safe_float(feature.get("microstructure_score")),
+                "blockers": blockers,
+            }
+            inspected.append(row)
+            if not blockers:
+                eligible.append(row)
+        return {
+            "regime": str(regime),
+            "ranked_count": len(ranked),
+            "base_momentum_attached": sum(bool(x.get("base_momentum")) for x in ranked),
+            "eligible_count": len(eligible),
+            "blocker_counts": dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "eligible": eligible[:5],
+            "top_inspected": inspected[:8],
+        }
 
     def _try_open(self, ranked, regime):
         if self.state.get("open_position") is not None:
@@ -319,6 +348,7 @@ class V25HybridShadow:
         }
 
     def process(self, ranked_features, regime):
+        self.last_diagnostics = self._diagnostics(ranked_features, regime)
         pos = self.state.get("open_position")
         if pos:
             feature = next((x for x in ranked_features if x.get("symbol") == pos.get("symbol")), None)
@@ -344,5 +374,6 @@ class V25HybridShadow:
             "last_action":self.state.get("last_action"),
             "last_rejection":self.state.get("last_rejection"),
             "recent_trades":(self.state.get("trades") or [])[-20:],
+            "diagnostics":self.last_diagnostics,
             "live_execution":False,
         }
