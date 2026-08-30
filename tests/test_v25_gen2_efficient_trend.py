@@ -1,4 +1,7 @@
-from src.v25.evidence import _research_efficient_trend_continuation
+from src.v25.evidence import (
+    _efficient_trend_gate_diagnostics,
+    _research_efficient_trend_continuation,
+)
 
 
 def strong_slow_state():
@@ -38,3 +41,20 @@ def test_gen2_efficient_trend_rejects_choppy_move():
     s = strong_slow_state()
     s["base_momentum"]["cross_section"]["trend_efficiency_30m_percentile"] = 0.40
     assert not _research_efficient_trend_continuation(s)
+
+
+def test_gen2_gate_diagnostics_expose_fixed_rule_funnel():
+    passing = strong_slow_state()
+    failing = strong_slow_state()
+    failing["base_momentum"]["cross_section"]["amihud_30m_percentile"] = 0.90
+    rows = [
+        {"symbol": "BTCUSDT", "snapshot_ms": passing["snapshot_ms"], "snapshot": passing},
+        {"symbol": "ETHUSDT", "snapshot_ms": failing["snapshot_ms"], "snapshot": failing},
+    ]
+
+    diagnostics = _efficient_trend_gate_diagnostics(rows, 300)
+
+    assert diagnostics["post_boundary_independent_n"] == 2
+    assert diagnostics["marginal_pass_n"]["amihud_pct_lte_0.65"] == 1
+    assert diagnostics["sequential_pass_n"]["current_move_lte_0.80"] == 1
+    assert diagnostics["fixed_rule_unchanged"] is True

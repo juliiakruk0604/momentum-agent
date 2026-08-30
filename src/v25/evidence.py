@@ -181,20 +181,45 @@ def _research_short_squeeze(s):
     ])
 
 
-def _research_efficient_trend_continuation(s):
+def _efficient_trend_checks(s):
     base, ff, cs, nm = _base_parts(s)
-    if not base or not cs:
-        return False
     age = _signal_age_seconds(s)
-    return all([
-        age is not None and age <= 150.0,
-        _f(ff.get("ret_3m_pct")) > 0.0,
-        _f(nm.get("ret_3m_over_rv")) >= 0.75,
-        _f(nm.get("rs_5m_over_rv")) >= 0.50,
-        _f(cs.get("trend_efficiency_30m_percentile")) >= 0.75,
-        _f(cs.get("amihud_30m_percentile"), 1.0) <= 0.65,
-        _f(ff.get("current_move_pct")) <= 0.80,
-    ])
+    return {
+        "base_and_cross_present": bool(base) and bool(cs),
+        "signal_age_lte_150s": age is not None and age <= 150.0,
+        "ret_3m_positive": _f(ff.get("ret_3m_pct")) > 0.0,
+        "ret_3m_over_rv_gte_0.75": _f(nm.get("ret_3m_over_rv")) >= 0.75,
+        "rs_5m_over_rv_gte_0.50": _f(nm.get("rs_5m_over_rv")) >= 0.50,
+        "trend_efficiency_pct_gte_0.75": (
+            _f(cs.get("trend_efficiency_30m_percentile")) >= 0.75
+        ),
+        "amihud_pct_lte_0.65": _f(cs.get("amihud_30m_percentile"), 1.0) <= 0.65,
+        "current_move_lte_0.80": _f(ff.get("current_move_pct")) <= 0.80,
+    }
+
+
+def _research_efficient_trend_continuation(s):
+    return all(_efficient_trend_checks(s).values())
+
+
+def _efficient_trend_gate_diagnostics(rows, horizon):
+    independent = _nonoverlap(rows, horizon)
+    marginal = {key: 0 for key in _efficient_trend_checks({})}
+    sequential = {key: 0 for key in marginal}
+    for row in independent:
+        checks = _efficient_trend_checks(row.get("snapshot") or {})
+        passed_so_far = True
+        for key, passed in checks.items():
+            marginal[key] += int(bool(passed))
+            passed_so_far = passed_so_far and bool(passed)
+            sequential[key] += int(passed_so_far)
+    return {
+        "post_boundary_raw_n": len(rows),
+        "post_boundary_independent_n": len(independent),
+        "marginal_pass_n": marginal,
+        "sequential_pass_n": sequential,
+        "fixed_rule_unchanged": True,
+    }
 
 
 GEN2_HYPOTHESES = {
@@ -537,6 +562,10 @@ def run_v25_evidence(store):
                 "validation": _metrics(valid),
                 "research_only": True,
                 "hypothesis_generation": 2,
+                "gate_diagnostics": _efficient_trend_gate_diagnostics(
+                    gen2_rows,
+                    horizon,
+                ),
             }
             valid_spot = gen2[name]["validation"].get("avg_spot_net_pct")
             base_spot = gen2_base_v.get("avg_spot_net_pct")
