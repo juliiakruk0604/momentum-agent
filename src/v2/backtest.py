@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 
 import pandas as pd
 
 from .features import compute_features
 from .provider import BybitV2Provider
 from .regime import detect_regime
+from .risk import cost_adjusted_levels
 from .research import trade_metrics, monte_carlo
 from .setups import evaluate_setups
 from .simulator import simulate_long_path
@@ -18,12 +20,50 @@ def _ms(ts):
     return int(pd.Timestamp(ts).timestamp() * 1000)
 
 
+def _strategy_config_snapshot():
+    keys = [
+        "V2_BACKTEST_MIN_SCORE",
+        "V2_SETUP_COOLDOWN_MINUTES",
+        "V2_SHADOW_MAX_HOLD_MINUTES",
+        "V2_FEE_RATE",
+        "V2_BACKTEST_ENTRY_SLIPPAGE_PCT",
+        "V2_EXIT_SLIPPAGE_PCT",
+        "V2_BACKTEST_SPREAD_PCT",
+        "V2_MIN_NET_RR",
+        "V2_MAX_TARGET_PCT",
+        "V2_MAX_NOTIONAL_USDT",
+    ]
+    return {key: os.getenv(key) for key in keys}
+
+
+def _strategy_fingerprint():
+    root = Path(__file__).resolve().parents[2]
+    paths = [
+        "src/v2/features.py",
+        "src/v2/regime.py",
+        "src/v2/setups.py",
+        "src/v2/risk.py",
+        "src/v2/simulator.py",
+        "src/v2/backtest.py",
+    ]
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((root / relative).read_bytes())
+        digest.update(b"\0")
+    digest.update(json.dumps(_strategy_config_snapshot(), sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
 def _dataset_id(start, end, universe):
     payload = json.dumps({
         "start": str(start),
         "end": str(end),
         "universe": list(universe),
-        "version": 1,
+        "version": 2,
+        "strategy_fingerprint": _strategy_fingerprint(),
+        "strategy_config": _strategy_config_snapshot(),
     }, sort_keys=True).encode("utf-8")
     return "v2_spot_" + hashlib.sha256(payload).hexdigest()[:16]
 
@@ -132,7 +172,23 @@ class V2BacktestRunner:
         return None if row is None else row.get("value")
 
     def ensure_state(self):
-        return self.state() or self._new_state()
+        state = self.state()
+        if not state:
+            return self._new_state()
+        current_fp = _strategy_fingerprint()
+        current_cfg = _strategy_config_snapshot()
+        if state.get("strategy_fingerprint") != current_fp or state.get("strategy_config") != current_cfg:
+            old_id = str(state.get("dataset_id") or "unknown")
+            self.store.set_runtime(
+                f"v2_backtest_superseded:{old_id}",
+                {
+                    **state,
+                    "superseded_at": str(pd.Timestamp.now(tz="UTC")),
+                    "superseded_reason": "strategy_or_config_changed",
+                },
+            )
+            return self._new_state()
+        return state
 
     def _benchmarks(self, state):
         key = (state["start"], state["end"])
