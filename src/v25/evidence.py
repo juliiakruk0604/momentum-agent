@@ -361,13 +361,6 @@ def _fixed_context_diagnostics(raw, horizon):
         "0.60_to_1.20": [],
         "gte_1.20": [],
     }
-
-
-def _base_validation_metrics(rows, horizon):
-    selected = [r for r in rows if _base_ok(r.get("snapshot") or {})]
-    selected = _nonoverlap(selected, horizon)
-    _, valid = _split(selected, horizon)
-    return _metrics(valid)
     for row in valid:
         snapshot = row.get("snapshot") or {}
         _, ff, cs, _ = _base_parts(snapshot)
@@ -401,6 +394,13 @@ def _base_validation_metrics(rows, horizon):
             key: _metrics(rows) for key, rows in vol_buckets.items()
         },
     }
+
+
+def _base_validation_metrics(rows, horizon):
+    selected = [r for r in rows if _base_ok(r.get("snapshot") or {})]
+    selected = _nonoverlap(selected, horizon)
+    _, valid = _split(selected, horizon)
+    return _metrics(valid)
 
 
 def _coverage_metrics(rows):
@@ -593,28 +593,28 @@ def run_v25_evidence(store):
     )
     for generation, by_horizon in hypothesis_groups:
         for horizon, families in by_horizon.items():
-          for name, d in families.items():
-            valid = d.get("validation") or {}
-            family_promotion = d.get("promotion") or {}
-            if not bool(family_promotion.get("candidate_promotable")):
-                continue
-            n = int(valid.get("n") or 0)
-            spot = valid.get("avg_spot_net_pct")
-            perp = valid.get("avg_perp1x_fee_cf_pct")
-            candidate = {
-                "horizon_seconds": int(horizon),
-                "name": name,
-                "validation_n": n,
-                "spot_net_pct": spot,
-                "perp1x_fee_cf_pct": perp,
-                "spot_lower_mean_90_pct": valid.get("spot_lower_mean_90_pct"),
-                "spot_profit_factor": valid.get("spot_profit_factor"),
-                "spot_lift_vs_base_pct": d.get("validation_spot_lift_vs_base_pct"),
-                "hypothesis_generation": generation,
-            }
-            key = float(valid.get("spot_lower_mean_90_pct") or -999.0)
-            if best is None or key > float(best.get("spot_lower_mean_90_pct") or -999.0):
-                best = candidate
+            for name, d in families.items():
+                valid = d.get("validation") or {}
+                family_promotion = d.get("promotion") or {}
+                if not bool(family_promotion.get("candidate_promotable")):
+                    continue
+                n = int(valid.get("n") or 0)
+                spot = valid.get("avg_spot_net_pct")
+                perp = valid.get("avg_perp1x_fee_cf_pct")
+                candidate = {
+                    "horizon_seconds": int(horizon),
+                    "name": name,
+                    "validation_n": n,
+                    "spot_net_pct": spot,
+                    "perp1x_fee_cf_pct": perp,
+                    "spot_lower_mean_90_pct": valid.get("spot_lower_mean_90_pct"),
+                    "spot_profit_factor": valid.get("spot_profit_factor"),
+                    "spot_lift_vs_base_pct": d.get("validation_spot_lift_vs_base_pct"),
+                    "hypothesis_generation": generation,
+                }
+                key = float(valid.get("spot_lower_mean_90_pct") or -999.0)
+                if best is None or key > float(best.get("spot_lower_mean_90_pct") or -999.0):
+                    best = candidate
     result["best_validated_hypothesis"] = best
     store.set_runtime("v25_evidence",result)
     return result

@@ -1,4 +1,9 @@
-from src.v25.evidence import _hypothesis_promotion, _metrics, RESEARCH_HYPOTHESES
+from src.v25.evidence import (
+    _fixed_context_diagnostics,
+    _hypothesis_promotion,
+    _metrics,
+    RESEARCH_HYPOTHESES,
+)
 
 
 def test_v25_research_hypotheses_registered():
@@ -42,3 +47,18 @@ def test_all_win_profit_factor_uses_json_safe_cap():
     ])
     assert metrics["spot_profit_factor"] == 999.0
     assert metrics["spot_profit_factor_no_losses"] is True
+
+
+def test_fixed_context_diagnostics_never_returns_null():
+    result = _fixed_context_diagnostics([], 1800)
+    assert result["auto_apply"] is False
+    assert set(result["cross_section_composite_deciles"]) == {
+        str(i) for i in range(1, 11)
+    }
+    assert set(result["realized_vol_20m_fixed_buckets_pct"]) == {
+        "lt_0.15",
+        "0.15_to_0.30",
+        "0.30_to_0.60",
+        "0.60_to_1.20",
+        "gte_1.20",
+    }
