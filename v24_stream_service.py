@@ -10,6 +10,7 @@ from src.v2.provider import BybitV2Provider
 from src.v24.bybit_ws import BybitSpotStream
 from src.v24.challenger import V24EventShadow
 from src.v24.linear_ws import BybitLinearContextStream
+from src.v24.binance_ws import BinanceTradeStream, available_symbols as binance_available_symbols
 
 
 class V24Runtime:
@@ -93,13 +94,17 @@ async def main_async():
     }
     linear_symbols = [s for s in symbols if s in linear_set]
 
+    binance_symbols = binance_available_symbols(symbols)
+
     runtime = V24Runtime(store, symbols)
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
     linear_stream = BybitLinearContextStream(linear_symbols)
+    binance_stream = BinanceTradeStream(binance_symbols)
 
     print("V24_STREAM_START", json.dumps({
         "symbols": symbols,
         "linear_symbols": linear_symbols,
+        "binance_symbols": binance_symbols,
         "live_execution": False,
     }), flush=True)
 
@@ -108,6 +113,7 @@ async def main_async():
             status = stream.status()
             status["generated_at_ms"] = int(time.time() * 1000)
             status["linear_stream"] = linear_stream.status()
+            status["binance_stream"] = binance_stream.status()
             store.set_runtime("v24_stream_status", status)
             print("V24_STREAM_STATUS", json.dumps(status, default=str), flush=True)
             await asyncio.sleep(max(10, int(os.getenv("V24_STATUS_SECONDS", "30"))))
@@ -124,12 +130,39 @@ async def main_async():
                 now_ms = int(time.time() * 1000)
                 enriched = []
                 for feature in ranked:
-                    context = linear_stream.context(feature.get("symbol"), now_ms)
+                    symbol = feature.get("symbol")
+                    context = linear_stream.context(symbol, now_ms)
+                    bctx = binance_stream.context(symbol, now_ms)
+                    b1 = float(((bctx.get("trade_1s") or {}).get("price_move_pct") or 0.0))
+                    b5 = float(((bctx.get("trade_5s") or {}).get("price_move_pct") or 0.0))
+                    y1 = float(feature.get("price_move_1s_pct") or 0.0)
+                    y5 = float(feature.get("price_move_5s_pct") or 0.0)
+                    cross = {
+                        "binance_available": bool(bctx.get("available")),
+                        "binance_trade_1s": bctx.get("trade_1s"),
+                        "binance_trade_5s": bctx.get("trade_5s"),
+                        "binance_minus_bybit_move_1s_pct": b1 - y1,
+                        "binance_minus_bybit_move_5s_pct": b5 - y5,
+                        "auto_weight_in_signal": False,
+                    }
                     enriched.append({
                         **feature,
                         "perp_context": context,
+                        "cross_exchange": cross,
                     })
                 ranked = enriched
+                store.set_runtime("v24_cross_exchange_top", {
+                    "generated_at_ms": now_ms,
+                    "top": [
+                        {
+                            "symbol": x.get("symbol"),
+                            "microstructure_score": x.get("microstructure_score"),
+                            "cross_exchange": x.get("cross_exchange"),
+                        }
+                        for x in ranked[:10]
+                    ],
+                    "auto_weight_in_signal": False,
+                })
                 store.set_runtime("v24_perp_context_top", {
                     "generated_at_ms": now_ms,
                     "top": [
@@ -158,6 +191,7 @@ async def main_async():
     await asyncio.gather(
         stream.run_forever(),
         linear_stream.run_forever(),
+        binance_stream.run_forever(),
         status_loop(),
         decision_loop(),
     )
