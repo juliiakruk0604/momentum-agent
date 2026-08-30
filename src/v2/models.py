@@ -23,6 +23,7 @@ class MarketRegime:
 @dataclass
 class FeatureSnapshot:
     symbol: str
+    signal_time: str
     price: float
     atr_pct: float
     ret_15m_pct: float
