@@ -17,6 +17,8 @@ from src.labeling import label_future_moves
 from src.models import ImpulseSignal
 from src.providers.bybit_public import BybitPublicProvider
 from src.readiness import combine_readiness
+from src.promo_scanner import scan_promos
+from src.bybit_account import account_diagnostic, funding_balances
 from src.store import SignalStore
 
 
@@ -108,6 +110,48 @@ def _prepare_provenance_rebuild(backfill, store):
         "to_dataset_id": new_state.get("dataset_id"),
     }
 
+
+
+def _promo_bucket(now):
+    return pd.Timestamp(now).floor("15min").isoformat()
+
+
+def process_promo_scan(store, now):
+    bucket = _promo_bucket(now)
+    last = store.get_runtime("promo_scan_bucket")
+    if last is not None and last.get("value") == bucket:
+        return {"performed": False, "bucket": bucket}
+
+    result = scan_promos(limit=50)
+    store.set_runtime("promo_scan", result)
+    store.set_runtime("promo_scan_bucket", bucket)
+
+    account = account_diagnostic()
+    funding = funding_balances()
+    private_snapshot = {
+        "checked_at": str(pd.Timestamp.now(tz="UTC")),
+        "connected": account.get("connected"),
+        "spot_trade_enabled": account.get("spot_trade_enabled"),
+        "forbidden_permissions": account.get("forbidden_permissions"),
+        "unified_total_equity_usd": account.get("total_equity_usd"),
+        "funding": funding,
+        "execution_enabled": False,
+    }
+    store.set_runtime("promo_account_snapshot", private_snapshot)
+    print("PROMO_ACCOUNT", json.dumps(private_snapshot, default=str), flush=True)
+
+    top = (result.get("candidates") or [])[:5]
+    print("PROMO_SCAN", json.dumps({
+        "scanned": result.get("scanned"),
+        "top": top,
+        "execution_enabled": False,
+    }, default=str), flush=True)
+    return {
+        "performed": True,
+        "bucket": bucket,
+        "scanned": result.get("scanned"),
+        "top_count": len(top),
+    }
 
 def run_once(provider, store, cfg, universe_limit=100):
     started = pd.Timestamp.now(tz="UTC")
@@ -210,6 +254,11 @@ def run_once(provider, store, cfg, universe_limit=100):
             print("continuation_error", imp.symbol, repr(exc), flush=True)
 
     label_stats = process_labels(provider, store, cfg, now)
+    try:
+        promo_stats = process_promo_scan(store, now)
+    except Exception as exc:
+        promo_stats = {"performed": False, "error": repr(exc)}
+        print("promo_scan_error", repr(exc), flush=True)
     summary = {
         "started_at": str(started),
         "finished_at": str(pd.Timestamp.now(tz="UTC")),
@@ -222,6 +271,7 @@ def run_once(provider, store, cfg, universe_limit=100):
         "scan_errors": scan_errors,
         "continuation_errors": continuation_errors,
         **label_stats,
+        "promo_scan": promo_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
     today = pd.Timestamp.now(tz="UTC").date().isoformat()
