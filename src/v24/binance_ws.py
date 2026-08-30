@@ -11,25 +11,36 @@ from websockets.asyncio.client import connect
 
 
 BINANCE_WS = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/ws")
-BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
+BINANCE_REST = os.getenv("BINANCE_REST_URL", "https://data-api.binance.vision")
+BINANCE_REST_FALLBACKS = [
+    BINANCE_REST,
+    "https://api-gcp.binance.com",
+    "https://api1.binance.com",
+]
 
 
 def available_symbols(symbols):
-    try:
-        r = requests.get(
-            BINANCE_REST + "/api/v3/exchangeInfo",
-            timeout=float(os.getenv("V24_BINANCE_REST_TIMEOUT", "8")),
-        )
-        r.raise_for_status()
-        payload = r.json()
-        trading = {
-            str(x.get("symbol"))
-            for x in payload.get("symbols") or []
-            if x.get("status") == "TRADING"
-        }
-        return [s for s in symbols if s in trading]
-    except Exception:
-        return []
+    timeout = float(os.getenv("V24_BINANCE_REST_TIMEOUT", "8"))
+    last_error = None
+    for base in dict.fromkeys(BINANCE_REST_FALLBACKS):
+        try:
+            r = requests.get(base + "/api/v3/exchangeInfo", timeout=timeout)
+            r.raise_for_status()
+            payload = r.json()
+            trading = {
+                str(x.get("symbol"))
+                for x in payload.get("symbols") or []
+                if x.get("status") == "TRADING"
+            }
+            if trading:
+                return [s for s in symbols if s in trading]
+        except Exception as exc:
+            last_error = exc
+            continue
+    # Fail open only for widely supported core symbols so one blocked REST
+    # endpoint does not silently disable the entire cross-exchange feed.
+    core = {"BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","ENAUSDT","AAVEUSDT","XAUTUSDT"}
+    return [s for s in symbols if s in core]
 
 
 class BinanceTradeStream:
