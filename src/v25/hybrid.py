@@ -200,6 +200,13 @@ class V25HybridShadow:
             exit_fee = proceeds * fee_rate
             self.state["cash_usdt"] = _safe_float(self.state.get("cash_usdt")) + proceeds - exit_fee
             pnl = _safe_float(self.state.get("cash_usdt")) - _safe_float(pos.get("equity_before_entry"))
+            perp_fee_rate = float(os.getenv("V25_PERP_TAKER_FEE_RATE", "0.00055"))
+            entry_notional = _safe_float(pos.get("entry_notional_usdt"))
+            perp_entry_fee = entry_notional * perp_fee_rate
+            perp_exit_fee = proceeds * perp_fee_rate
+            gross_price_pnl = proceeds - entry_notional
+            perp_counterfactual_pnl = gross_price_pnl - perp_entry_fee - perp_exit_fee
+
             trade = {
                 **pos,
                 "exit_time_ms": now,
@@ -207,6 +214,9 @@ class V25HybridShadow:
                 "exit_fee_usdt": exit_fee,
                 "exit_reason": reason,
                 "pnl_usdt": pnl,
+                "perp_1x_counterfactual_pnl_usdt": perp_counterfactual_pnl,
+                "perp_1x_counterfactual_fee_rate": perp_fee_rate,
+                "counterfactual_note": "same spot price path/slippage; fee effect only; no leverage/funding",
             }
             self.state["trades"] = ((self.state.get("trades") or []) + [trade])[-250:]
             self.state["realized_pnl_usdt"] = _safe_float(self.state.get("realized_pnl_usdt")) + pnl
@@ -393,6 +403,7 @@ class V25HybridShadow:
     def summary(self):
         start = _safe_float(self.state.get("starting_equity_usdt"), 15.0)
         equity = _safe_float(self.state.get("equity_usdt"), start)
+        trades = self.state.get("trades") or []
         return {
             "mode":"V2.5_HYBRID_SHADOW",
             "strategy_version":"2.5",
@@ -402,7 +413,10 @@ class V25HybridShadow:
             "realized_pnl_usdt":round(_safe_float(self.state.get("realized_pnl_usdt")), 8),
             "armed":self.state.get("armed"),
             "open_position":self.state.get("open_position"),
-            "closed_trades":len(self.state.get("trades") or []),
+            "closed_trades":len(trades),
+            "perp_1x_counterfactual_total_pnl_usdt":round(
+                sum(_safe_float(t.get("perp_1x_counterfactual_pnl_usdt")) for t in trades), 8
+            ),
             "last_action":self.state.get("last_action"),
             "last_rejection":self.state.get("last_rejection"),
             "recent_trades":(self.state.get("trades") or [])[-20:],
