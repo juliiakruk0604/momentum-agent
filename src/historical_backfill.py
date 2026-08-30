@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
+
 import pandas as pd
 
 from .continuation import evaluate_continuation
@@ -19,6 +21,24 @@ def _ms(ts):
 def _config_fingerprint(cfg):
     payload = json.dumps(cfg, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _generator_fingerprint():
+    root = Path(__file__).resolve().parents[1]
+    paths = (
+        "src/historical_backfill.py",
+        "src/impulse.py",
+        "src/continuation.py",
+        "src/labeling.py",
+        "src/providers/bybit_public.py",
+    )
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((root / relative).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
 
 
 def active_overlap(meta, start, end):
@@ -119,7 +139,8 @@ class HistoricalBackfillRunner:
             if str(m.get("status")) == "Closed" or int(m.get("deliveryTime") or 0) > 0
         )
         fingerprint = _config_fingerprint(self.cfg)
-        dataset_id = f"bybit_oos_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_v321_{fingerprint}"
+        generator_fingerprint = _generator_fingerprint()
+        dataset_id = f"bybit_oos_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}_v321_{fingerprint}_{generator_fingerprint}"
         state = {
             "dataset_id": dataset_id,
             "start": start.isoformat(),
@@ -138,6 +159,9 @@ class HistoricalBackfillRunner:
             "survivorship_warning": closed_or_delivered == 0,
             "config_fingerprint": fingerprint,
             "config_mismatch": False,
+            "generator_fingerprint": generator_fingerprint,
+            "generator_mismatch": False,
+            "generator_provenance_missing": False,
             "complete": len(universe) == 0,
             "created_at": now.isoformat(),
         }
@@ -159,18 +183,34 @@ class HistoricalBackfillRunner:
             state["config_fingerprint"] = fingerprint
             state["config_fingerprint_pinned_at"] = pd.Timestamp.now(tz="UTC").isoformat()
             state["config_mismatch"] = False
-            self.store.set_runtime(self.STATE_KEY, state)
-            return state
-
-        mismatch = pinned != fingerprint
-        state["config_mismatch"] = mismatch
-        if mismatch:
-            state["observed_config_fingerprint"] = fingerprint
-            state["complete"] = False
-            state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
-            self.store.set_runtime(self.STATE_KEY, state)
         else:
-            state.pop("observed_config_fingerprint", None)
+            mismatch = pinned != fingerprint
+            state["config_mismatch"] = mismatch
+            if mismatch:
+                state["observed_config_fingerprint"] = fingerprint
+                state["complete"] = False
+            else:
+                state.pop("observed_config_fingerprint", None)
+
+        observed_generator = _generator_fingerprint()
+        pinned_generator = state.get("generator_fingerprint")
+        if not pinned_generator:
+            state["generator_provenance_missing"] = True
+            state["generator_mismatch"] = False
+            state["observed_generator_fingerprint"] = observed_generator
+            state["complete"] = False
+        else:
+            state["generator_provenance_missing"] = False
+            generator_mismatch = pinned_generator != observed_generator
+            state["generator_mismatch"] = generator_mismatch
+            if generator_mismatch:
+                state["observed_generator_fingerprint"] = observed_generator
+                state["complete"] = False
+            else:
+                state.pop("observed_generator_fingerprint", None)
+
+        state["updated_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+        self.store.set_runtime(self.STATE_KEY, state)
         return state
 
     def _benchmarks(self, state):
@@ -300,7 +340,7 @@ class HistoricalBackfillRunner:
         cursor = int(state.get("cursor") or 0)
         batch_size = max(1, int(batch_size))
 
-        if state.get("config_mismatch"):
+        if state.get("config_mismatch") or state.get("generator_mismatch") or state.get("generator_provenance_missing"):
             return {
                 "dataset_id": state["dataset_id"],
                 "complete": False,
@@ -308,9 +348,13 @@ class HistoricalBackfillRunner:
                 "cursor": cursor,
                 "universe_size": len(universe),
                 "processed": [],
-                "config_mismatch": True,
+                "config_mismatch": bool(state.get("config_mismatch")),
                 "config_fingerprint": state.get("config_fingerprint"),
                 "observed_config_fingerprint": state.get("observed_config_fingerprint"),
+                "generator_provenance_missing": bool(state.get("generator_provenance_missing")),
+                "generator_mismatch": bool(state.get("generator_mismatch")),
+                "generator_fingerprint": state.get("generator_fingerprint"),
+                "observed_generator_fingerprint": state.get("observed_generator_fingerprint"),
             }
 
         if cursor < len(universe):
