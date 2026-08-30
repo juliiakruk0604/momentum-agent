@@ -435,3 +435,21 @@ def v2_shadow_pnl():
         **v2_shadow_summary(row["value"]),
         "live_execution": False,
     }
+
+
+@app.get("/v2/backtest-status")
+def v2_backtest_status():
+    state_row = store.get_runtime("v2_backtest_state")
+    summary_row = store.get_runtime("v2_backtest_summary")
+    error_row = store.get_runtime("v2_backtest_error")
+    state = None if state_row is None else state_row.get("value")
+    summary = None if summary_row is None else summary_row.get("value")
+    error = None if error_row is None else error_row.get("value")
+    return {
+        "engine": "MomentumAgentV2",
+        "mode": "HISTORICAL_SPOT_1M_PATH",
+        "state": state,
+        "summary": summary,
+        "error": error,
+        "live_execution": False,
+    }
