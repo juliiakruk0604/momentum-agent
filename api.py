@@ -536,3 +536,19 @@ def v24_microstructure():
             "live_execution": False,
         }
     return row["value"]
+
+
+@app.get("/v24/shadow-pnl")
+def v24_shadow_pnl():
+    row = store.get_runtime("v24_event_shadow_summary")
+    if row is None or not isinstance(row.get("value"), dict):
+        row = store.get_runtime("v24_event_shadow")
+        value = None if row is None else row.get("value")
+        return {
+            "engine": "MomentumAgentV2.4",
+            "mode": "EVENT_DRIVEN_SHADOW",
+            "status": "waiting_for_stream",
+            "state": value,
+            "live_execution": False,
+        }
+    return row["value"]
