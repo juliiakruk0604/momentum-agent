@@ -341,6 +341,18 @@ async def main_async():
 
                 hybrid = hybrid_shadow.process(ranked, regime)
                 store.set_runtime("v25_hybrid_shadow_summary", hybrid)
+
+                base_coverage = sum(bool(x.get("base_momentum")) for x in ranked)
+                coverage_ratio = 0.0 if not ranked else base_coverage / len(ranked)
+                if coverage_ratio >= float(os.getenv("V25_FULL_BASE_COVERAGE_RATIO", "0.80")):
+                    if store.get_runtime("v25_full_base_context_started") is None:
+                        store.set_runtime("v25_full_base_context_started", {
+                            "started_ms": now_ms,
+                            "coverage_ratio": coverage_ratio,
+                            "base_attached": base_coverage,
+                            "ranked_count": len(ranked),
+                            "note": "generation boundary for full fast-universe alpha context",
+                        })
                 hybrid_fp = json.dumps({
                     "armed": hybrid.get("armed"),
                     "open": None if not hybrid.get("open_position") else hybrid["open_position"].get("symbol"),
