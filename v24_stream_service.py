@@ -12,6 +12,7 @@ from src.v24.challenger import V24EventShadow
 from src.v24.linear_ws import BybitLinearContextStream
 from src.v24.binance_ws import BinanceTradeStream, available_symbols as binance_available_symbols
 from src.v24.okx_ws import OKXTradeStream, available_symbols as okx_available_symbols
+from src.v24.sequence import SequenceFeatureEngine
 
 
 class V24Runtime:
@@ -99,6 +100,7 @@ async def main_async():
     okx_symbols = okx_available_symbols(symbols)
 
     runtime = V24Runtime(store, symbols)
+    sequence_engine = SequenceFeatureEngine()
     last_feature_archive_ms = 0
     last_price_tick_ms = 0
     last_price_prune_ms = 0
@@ -218,11 +220,12 @@ async def main_async():
                         "external_minus_bybit_move_5s_pct": consensus5 - y5,
                         "auto_weight_in_signal": False,
                     }
-                    enriched.append({
+                    enriched_item = {
                         **feature,
                         "perp_context": context,
                         "cross_exchange": cross,
-                    })
+                    }
+                    enriched.append(sequence_engine.enrich(enriched_item, now_ms))
                 ranked = enriched
 
                 nonlocal last_feature_archive_ms, last_price_tick_ms, last_price_prune_ms
