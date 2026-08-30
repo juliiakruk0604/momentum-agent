@@ -1,4 +1,4 @@
-from src.v25.evidence import _base_ok, _micro_ok, _nonoverlap
+from src.v25.evidence import _base_ok, _micro_ok, _nonoverlap, run_v25_evidence
 
 
 def _snapshot():
@@ -61,3 +61,29 @@ def test_v25_evidence_nonoverlap_per_symbol():
     assert [(x["symbol"], x["snapshot_ms"]) for x in out] == [
         ("A",1000),("B",2000),("A",7000)
     ]
+
+
+def test_v25_promotion_gate_fails_closed_without_validation_evidence(monkeypatch):
+    class EmptyStore:
+        def __init__(self):
+            self.runtime = None
+
+        def v24_labeled_snapshots(self, horizon, limit=30000):
+            return []
+
+        def set_runtime(self, key, value):
+            self.runtime = (key, value)
+
+    monkeypatch.setenv("V25_PROMOTION_MIN_VALIDATION_N", "20")
+    store = EmptyStore()
+    result = run_v25_evidence(store)
+
+    promotion = result["promotion"]
+    assert promotion["candidate_promotable"] is False
+    assert promotion["required_horizons"] == [900, 1800]
+    for horizon in promotion["required_horizons"]:
+        assert f"h{horizon}:insufficient_validation_n" in promotion["reasons"]
+        assert f"h{horizon}:spot_net_nonpositive" in promotion["reasons"]
+        assert f"h{horizon}:no_lift_vs_base" in promotion["reasons"]
+
+    assert store.runtime == ("v25_evidence", result)
