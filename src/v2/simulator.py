@@ -22,6 +22,44 @@ class SimulatedTrade:
         return asdict(self)
 
 
+def find_barrier_exit(
+    bars1m,
+    entry_time,
+    stop_price,
+    target_price,
+    exit_slippage_pct=0.05,
+    max_hold_minutes=None,
+):
+    path = bars1m[bars1m.index >= entry_time]
+    if max_hold_minutes is not None:
+        path = path.head(int(max_hold_minutes) + 1)
+    if path.empty:
+        return None
+
+    for ts, row in path.iterrows():
+        low, high = float(row["low"]), float(row["high"])
+        if low <= float(stop_price):
+            return {
+                "exit_time": ts,
+                "exit_price": float(stop_price) * (1.0 - float(exit_slippage_pct) / 100.0),
+                "exit_reason": "STOP",
+            }
+        if high >= float(target_price):
+            return {
+                "exit_time": ts,
+                "exit_price": float(target_price) * (1.0 - float(exit_slippage_pct) / 100.0),
+                "exit_reason": "TAKE_PROFIT",
+            }
+
+    if max_hold_minutes is not None and len(path) >= int(max_hold_minutes) + 1:
+        return {
+            "exit_time": path.index[-1],
+            "exit_price": float(path.iloc[-1]["close"]) * (1.0 - float(exit_slippage_pct) / 100.0),
+            "exit_reason": "TIME_EXIT",
+        }
+    return None
+
+
 def simulate_long_path(
     symbol,
     bars1m,
@@ -44,36 +82,19 @@ def simulate_long_path(
     stop_price = actual_entry * (1.0 - float(stop_pct) / 100.0)
     target_price = actual_entry * (1.0 + float(target_pct) / 100.0)
 
-    path = bars1m[bars1m.index >= entry_time].head(int(max_hold_minutes) + 1)
-    if path.empty:
+    event = find_barrier_exit(
+        bars1m,
+        entry_time,
+        stop_price,
+        target_price,
+        exit_slippage_pct=exit_slippage_pct,
+        max_hold_minutes=max_hold_minutes,
+    )
+    if event is None:
         raise RuntimeError("no_1m_bars_after_entry")
-
-    exit_price = None
-    exit_reason = None
-    exit_time = None
-
-    for ts, row in path.iterrows():
-        low, high = float(row["low"]), float(row["high"])
-        stop_hit = low <= stop_price
-        target_hit = high >= target_price
-
-        # Conservative same-candle rule: when 1m OHLC cannot reveal ordering, count STOP first.
-        if stop_hit:
-            exit_price = stop_price * (1.0 - float(exit_slippage_pct) / 100.0)
-            exit_reason = "STOP"
-            exit_time = ts
-            break
-        if target_hit:
-            exit_price = target_price * (1.0 - float(exit_slippage_pct) / 100.0)
-            exit_reason = "TAKE_PROFIT"
-            exit_time = ts
-            break
-
-    if exit_price is None:
-        last = path.iloc[-1]
-        exit_price = float(last["close"]) * (1.0 - float(exit_slippage_pct) / 100.0)
-        exit_reason = "TIME_EXIT"
-        exit_time = path.index[-1]
+    exit_price = float(event["exit_price"])
+    exit_reason = str(event["exit_reason"])
+    exit_time = event["exit_time"]
 
     gross_exit = qty * exit_price
     exit_fee = gross_exit * float(fee_rate)
