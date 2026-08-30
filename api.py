@@ -41,6 +41,40 @@ def _historical_backfill_empty_runs(historical):
     )
 
 
+def _historical_backfill_empty_symbols(historical):
+    dataset_id = (historical or {}).get("dataset_id")
+    if not dataset_id or not hasattr(store, "_execute"):
+        return []
+    rows = store._execute(
+        '''SELECT symbol FROM historical_symbol_runs
+           WHERE dataset_id=? AND status='empty' ORDER BY symbol''',
+        '''SELECT symbol FROM historical_symbol_runs
+           WHERE dataset_id=%s AND status='empty' ORDER BY symbol''',
+        (dataset_id,),
+        fetch="all",
+    ) or []
+    return [str(row.get("symbol")) for row in rows if row.get("symbol")]
+
+
+def _historical_backfill_unavailable_symbols(historical):
+    empty_symbols = set(_historical_backfill_empty_symbols(historical))
+    if not empty_symbols or not hasattr(store, "get_runtime"):
+        return []
+    runtime = store.get_runtime("historical_backfill_state") or {}
+    state = runtime.get("value") or {}
+    universe = state.get("universe") or []
+    unavailable = []
+    for meta in universe:
+        symbol = str(meta.get("symbol") or "")
+        if symbol not in empty_symbols:
+            continue
+        status = str(meta.get("status") or "")
+        delivery_raw = int(meta.get("deliveryTime") or 0)
+        if status == "Closed" or delivery_raw > 0:
+            unavailable.append(symbol)
+    return sorted(set(unavailable))
+
+
 def _historical_backfill_legacy_partial_runs(historical):
     dataset_id = (historical or {}).get("dataset_id")
     if not dataset_id or not hasattr(store, "_execute"):
@@ -71,12 +105,17 @@ def _historical_status_with_integrity_gate(historical=None):
     partial_runs = _historical_backfill_partial_runs(historical)
     legacy_partial_runs = _historical_backfill_legacy_partial_runs(historical)
     empty_runs = _historical_backfill_empty_runs(historical)
+    unavailable_symbols = _historical_backfill_unavailable_symbols(historical)
+    unavailable_count = len(unavailable_symbols)
+    transient_empty_count = max(0, empty_runs - unavailable_count)
 
     if backfill_errors > 0 and "historical_backfill_has_errors" not in reasons:
         reasons.append("historical_backfill_has_errors")
     if partial_runs + legacy_partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
         reasons.append("historical_backfill_has_partial_runs")
-    if empty_runs > 0 and "historical_backfill_has_empty_runs" not in reasons:
+    if unavailable_count > 0 and "historical_backfill_has_unavailable_market_data" not in reasons:
+        reasons.append("historical_backfill_has_unavailable_market_data")
+    if transient_empty_count > 0 and "historical_backfill_has_empty_runs" not in reasons:
         reasons.append("historical_backfill_has_empty_runs")
 
     return {
@@ -94,6 +133,9 @@ def _historical_status_with_integrity_gate(historical=None):
             "backfill_partial_run_count": partial_runs + legacy_partial_runs,
             "backfill_legacy_partial_run_count": legacy_partial_runs,
             "backfill_empty_run_count": empty_runs,
+            "backfill_transient_empty_count": transient_empty_count,
+            "backfill_unavailable_market_data_count": unavailable_count,
+            "backfill_unavailable_market_data_symbols": unavailable_symbols,
         },
     }
 
@@ -118,8 +160,15 @@ def _micro_live_readiness():
     if total_partial_runs > 0 and "historical_backfill_has_partial_runs" not in reasons:
         reasons.append("historical_backfill_has_partial_runs")
 
-    empty_runs = _historical_backfill_empty_runs(historical)
-    if empty_runs > 0 and "historical_backfill_has_empty_runs" not in reasons:
+    integrity = historical.get("integrity") or {}
+    empty_runs = int(integrity.get("backfill_empty_run_count") or _historical_backfill_empty_runs(historical))
+    unavailable_count = int(integrity.get("backfill_unavailable_market_data_count") or 0)
+    transient_empty_count = int(integrity.get("backfill_transient_empty_count") or max(0, empty_runs - unavailable_count))
+    unavailable_symbols = list(integrity.get("backfill_unavailable_market_data_symbols") or [])
+
+    if unavailable_count > 0 and "historical_backfill_has_unavailable_market_data" not in reasons:
+        reasons.append("historical_backfill_has_unavailable_market_data")
+    if transient_empty_count > 0 and "historical_backfill_has_empty_runs" not in reasons:
         reasons.append("historical_backfill_has_empty_runs")
 
     historical_research_gate = ((historical.get("oos") or {}).get("research_gate") or {})
@@ -137,6 +186,9 @@ def _micro_live_readiness():
             "historical_backfill_partial_run_count": total_partial_runs,
             "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
             "historical_backfill_empty_run_count": empty_runs,
+            "historical_backfill_transient_empty_count": transient_empty_count,
+            "historical_backfill_unavailable_market_data_count": unavailable_count,
+            "historical_backfill_unavailable_market_data_symbols": unavailable_symbols,
         }
     else:
         readiness = {
@@ -145,6 +197,9 @@ def _micro_live_readiness():
             "historical_backfill_partial_run_count": total_partial_runs,
             "historical_backfill_legacy_partial_run_count": legacy_partial_runs,
             "historical_backfill_empty_run_count": empty_runs,
+            "historical_backfill_transient_empty_count": transient_empty_count,
+            "historical_backfill_unavailable_market_data_count": unavailable_count,
+            "historical_backfill_unavailable_market_data_symbols": unavailable_symbols,
         }
     return readiness
 
