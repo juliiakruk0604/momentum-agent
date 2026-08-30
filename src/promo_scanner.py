@@ -147,16 +147,13 @@ def _enrich(candidate: PromoCandidate) -> PromoCandidate:
         candidate.reasons.append("manual_or_probability_component")
         candidate.score -= 15
 
-    risky_detail = [k for k in RISKY_KEYWORDS if k in lower]
-    if risky_detail:
-        candidate.reasons.append("risky_mechanic_in_details")
-        candidate.score -= 60
+    # Risk classification comes from the announcement metadata/title.
+    # Full page HTML includes Bybit navigation with unrelated Futures/Options text.
+    risky_detail = []
 
     # AUTO here means eligible for future safe automation.
     # It does not execute anything. Execution remains hard-disabled elsewhere.
-    if risky_detail:
-        candidate.action = "REJECT"
-    elif (
+    if (
         candidate.detail_checked
         and candidate.min_capital_usd is not None
         and candidate.min_capital_usd <= 2
