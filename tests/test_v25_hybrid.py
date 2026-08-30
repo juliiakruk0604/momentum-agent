@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from src.v25.hybrid import hybrid_gate
 
 
@@ -22,6 +24,7 @@ def _feature(regime_ready=True):
         },
         "perp_context":{"oi_change_30s_pct":0.05},
         "base_momentum":{
+            "signal_time":datetime.now(timezone.utc).isoformat(),
             "score":82,
             "initial_stop_pct":0.70,
             "risk":{"target_pct":2.0},
