@@ -22,6 +22,10 @@ def _ms(ts):
 
 def _strategy_config_snapshot():
     keys = [
+        "V2_BACKTEST_DAYS",
+        "V2_BACKTEST_HOLDOUT_DAYS",
+        "V2_BACKTEST_UNIVERSE",
+        "V2_BACKTEST_MIN_TURNOVER_USDT",
         "V2_BACKTEST_MIN_SCORE",
         "V2_SETUP_COOLDOWN_MINUTES",
         "V2_SHADOW_MAX_HOLD_MINUTES",
@@ -39,6 +43,7 @@ def _strategy_config_snapshot():
 def _strategy_fingerprint():
     root = Path(__file__).resolve().parents[2]
     paths = [
+        "src/v2/provider.py",
         "src/v2/features.py",
         "src/v2/regime.py",
         "src/v2/setups.py",
