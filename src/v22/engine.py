@@ -44,6 +44,11 @@ def scan_fast_v22(provider=None, universe_limit=None):
         limit=universe_limit,
         min_turnover=min_turnover,
     )
+    ticker_map = {
+        t.get("symbol"): t
+        for t in provider.tickers("spot")
+        if t.get("symbol")
+    }
 
     all_fast = []
     errors = []
@@ -51,6 +56,15 @@ def scan_fast_v22(provider=None, universe_limit=None):
         try:
             bars = _closed_1m(provider.kline(symbol, "1", 91, category="spot"), now)
             f = compute_fast_features(symbol, bars, btc1, eth1)
+            ticker = ticker_map.get(symbol) or {}
+            live_price = float(ticker.get("lastPrice") or f.price)
+            current_move = 0.0 if f.price <= 0 else (live_price / f.price - 1.0) * 100.0
+            f.current_move_pct = round(current_move, 6)
+            subminute_boost = 15.0 * min(
+                max(current_move, 0.0) / max(float(f.realized_vol_20m_pct) * 2.0, 0.10),
+                1.0,
+            )
+            f.coarse_score = round(min(100.0, float(f.coarse_score) + subminute_boost), 2)
             all_fast.append(f)
         except Exception as exc:
             errors.append({"symbol": symbol, "stage": "coarse", "error": repr(exc)[:160]})
@@ -73,6 +87,11 @@ def scan_fast_v22(provider=None, universe_limit=None):
             combined += 4.0
         if f.price_acceleration > 0:
             combined += 3.0
+        if f.current_move_pct > 0:
+            combined += min(
+                5.0,
+                5.0 * f.current_move_pct / max(float(f.realized_vol_20m_pct) * 2.0, 0.10),
+            )
         if f.rs_5m_pct > 0:
             combined += 3.0
         combined = round(min(100.0, combined), 2)
