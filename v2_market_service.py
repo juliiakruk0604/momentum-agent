@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+
+import pandas as pd
+
+from src.store import SignalStore
+from src.v2.engine import scan_v2
+from src.v2.shadow import process_v2_shadow
+
+
+def _bucket(now=None):
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    return now.floor("15min").isoformat()
+
+
+def main():
+    store = SignalStore()
+    sleep_seconds = max(10, int(os.getenv("V2_MARKET_LOOP_SECONDS", "20")))
+    universe = int(os.getenv("V2_UNIVERSE_LIMIT", "40"))
+    force_boot = os.getenv("V2_FORCE_BOOT_SCAN", "true").lower() in ("1","true","yes","on")
+    first = True
+    last_action_fingerprint = None
+
+    print("V2_MARKET_SERVICE_START", json.dumps({
+        "loop_seconds": sleep_seconds,
+        "universe": universe,
+        "live_execution": False,
+    }), flush=True)
+
+    while True:
+        started = pd.Timestamp.now(tz="UTC")
+        bucket = _bucket(started)
+        heartbeat = {
+            "started_at": str(started),
+            "bucket": bucket,
+            "scan": None,
+            "shadow": None,
+            "error": None,
+            "live_execution": False,
+        }
+
+        try:
+            last = store.get_runtime("v2_scan_bucket")
+            should_scan = first and force_boot
+            should_scan = should_scan or last is None or last.get("value") != bucket
+
+            if should_scan:
+                result = scan_v2(universe_limit=universe)
+                store.set_runtime("v2_scan", result)
+                store.set_runtime("v2_scan_bucket", bucket)
+                heartbeat["scan"] = {
+                    "performed": True,
+                    "candidate_count": result.get("candidate_count"),
+                    "regime": (result.get("regime") or {}).get("name"),
+                    "symbols_scanned": result.get("symbols_scanned"),
+                    "near_misses": (result.get("near_misses") or [])[:3],
+                }
+                print("V2_MARKET_SCAN", json.dumps({
+                    "bucket": bucket,
+                    "regime": result.get("regime"),
+                    "candidate_count": result.get("candidate_count"),
+                    "top": (result.get("candidates") or [])[:3],
+                    "near_misses": (result.get("near_misses") or [])[:3],
+                }, default=str), flush=True)
+            else:
+                heartbeat["scan"] = {"performed": False}
+
+            shadow = process_v2_shadow(store)
+            heartbeat["shadow"] = {
+                "equity": shadow.get("current_equity_usdt"),
+                "net_pnl": shadow.get("net_pnl_usdt"),
+                "open_position": shadow.get("open_position"),
+                "closed_trades": shadow.get("closed_trades"),
+                "last_action": shadow.get("last_action"),
+                "last_rejection": shadow.get("last_rejection"),
+            }
+
+            fingerprint = json.dumps({
+                "action": shadow.get("last_action"),
+                "rejection": shadow.get("last_rejection"),
+                "equity": shadow.get("current_equity_usdt"),
+            }, sort_keys=True, default=str)
+            if fingerprint != last_action_fingerprint:
+                print("V2_SHADOW_STATE", json.dumps(heartbeat["shadow"], default=str), flush=True)
+                last_action_fingerprint = fingerprint
+
+            store.set_runtime("v2_market_error", None)
+        except Exception as exc:
+            heartbeat["error"] = repr(exc)
+            store.set_runtime("v2_market_error", {
+                "time": str(pd.Timestamp.now(tz="UTC")),
+                "error": repr(exc),
+            })
+            print("V2_MARKET_ERROR", repr(exc), flush=True)
+
+        heartbeat["finished_at"] = str(pd.Timestamp.now(tz="UTC"))
+        store.set_runtime("v2_market_heartbeat", heartbeat)
+        first = False
+        time.sleep(sleep_seconds)
+
+
+if __name__ == "__main__":
+    main()
