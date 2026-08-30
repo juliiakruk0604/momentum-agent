@@ -65,6 +65,10 @@ class RiskDecision:
     stop_pct: float
     target_pct: float
     blockers: list[str]
+    execution_cost_pct: float = 0.0
+    net_risk_pct: float = 0.0
+    net_reward_pct: float = 0.0
+    net_rr: float = 0.0
 
     def to_dict(self):
         return asdict(self)
