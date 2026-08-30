@@ -4,6 +4,7 @@ import os
 
 
 HORIZONS = (5, 15, 30, 60)
+LABEL_VERSION = "price_tick_v2"
 
 
 def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
@@ -20,18 +21,24 @@ def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
     rows = [
         r for r in path
         if int(r.get("snapshot_ms") or 0) > start_ms
-        and int(r.get("snapshot_ms") or 0) <= end_ms
+        and int(r.get("snapshot_ms") or 0) <= end_ms + tolerance_ms
         and float(r.get("best_bid") or 0.0) > 0
     ]
     if not rows:
         raise RuntimeError("future_bid_path_missing")
 
-    last_ms = int(rows[-1]["snapshot_ms"])
-    if last_ms < end_ms - tolerance_ms:
+    endpoint = min(
+        rows,
+        key=lambda r: abs(int(r.get("snapshot_ms") or 0) - end_ms),
+    )
+    endpoint_ms = int(endpoint["snapshot_ms"])
+    if abs(endpoint_ms - end_ms) > tolerance_ms:
         raise RuntimeError("future_path_incomplete")
 
+    rows = [r for r in rows if int(r["snapshot_ms"]) <= endpoint_ms]
     bids = [float(r["best_bid"]) for r in rows]
-    final_bid = bids[-1]
+    final_bid = float(endpoint["best_bid"])
+    last_ms = endpoint_ms
     high_bid = max(bids)
     low_bid = min(bids)
 
@@ -50,6 +57,7 @@ def label_from_path(snapshot: dict, path: list[dict], horizon_seconds: int):
         "mae_bid_pct": round(mae, 8),
         "path_points": len(rows),
         "last_path_ms": last_ms,
+        "label_version": LABEL_VERSION,
         "hit_0_1": mfe >= 0.10,
         "hit_0_25": mfe >= 0.25,
         "hit_0_5": mfe >= 0.50,
@@ -62,27 +70,65 @@ class V24FeatureLabeler:
     def __init__(self, store):
         self.store = store
 
+    def _ensure_version(self):
+        tick_row = self.store.get_runtime("v24_price_tick_started")
+        tick = None if tick_row is None else tick_row.get("value")
+        if not isinstance(tick, dict) or not tick.get("started_ms"):
+            return None
+
+        version_row = self.store.get_runtime("v24_label_version")
+        current = None if version_row is None else version_row.get("value")
+        if current != LABEL_VERSION:
+            self.store.clear_v24_feature_labels()
+            self.store.set_runtime("v24_label_version", LABEL_VERSION)
+            self.store.set_runtime("v24_label_rebuild", {
+                "version": LABEL_VERSION,
+                "started_ms": int(tick["started_ms"]),
+                "reason": "switch_to_1s_price_tape",
+            })
+        return int(tick["started_ms"])
+
     def run_batch(self, per_horizon=None):
         per_horizon = int(
             per_horizon
             or os.getenv("V24_LABELS_PER_HORIZON_PER_CYCLE", "40")
         )
-        result = {"labeled": 0, "errors": [], "by_horizon": {}}
+        min_snapshot_ms = self._ensure_version()
+        if min_snapshot_ms is None:
+            return {
+                "status": "waiting_for_price_tape",
+                "label_version": LABEL_VERSION,
+                "labeled": 0,
+                "errors": [],
+                "by_horizon": {},
+                "stats": self.store.v24_feature_label_stats(),
+            }
+
+        result = {
+            "status": "running",
+            "label_version": LABEL_VERSION,
+            "min_snapshot_ms": min_snapshot_ms,
+            "labeled": 0,
+            "errors": [],
+            "by_horizon": {},
+        }
 
         for horizon in HORIZONS:
             candidates = self.store.v24_label_candidates(
                 horizon,
                 limit=per_horizon,
+                min_snapshot_ms=min_snapshot_ms,
             )
             labeled = 0
             errors = 0
             for snapshot in candidates:
                 try:
                     end_ms = int(snapshot["snapshot_ms"]) + int(horizon) * 1000
-                    path = self.store.v24_feature_path(
+                    tolerance_ms = int(os.getenv("V24_LABEL_END_TOLERANCE_MS", "1500"))
+                    path = self.store.v24_price_path(
                         str(snapshot["symbol"]),
                         int(snapshot["snapshot_ms"]),
-                        end_ms,
+                        end_ms + tolerance_ms,
                     )
                     label = label_from_path(snapshot, path, horizon)
                     self.store.upsert_v24_feature_label(label)
