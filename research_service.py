@@ -204,16 +204,31 @@ def main():
             cycle["v25_evidence"] = v25_evidence
             store.set_runtime("v25_evidence_error", None)
             compact = {
-                h: {
-                    name: {
-                        "n": d.get("effective_n"),
-                        "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
-                        "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
-                        "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                "layers": {
+                    h: {
+                        name: {
+                            "n": d.get("effective_n"),
+                            "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                            "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                            "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                        }
+                        for name, d in (x.get("variants") or {}).items()
                     }
-                    for name, d in (x.get("variants") or {}).items()
-                }
-                for h, x in (v25_evidence.get("horizons") or {}).items()
+                    for h, x in (v25_evidence.get("horizons") or {}).items()
+                },
+                "hypotheses": {
+                    h: {
+                        name: {
+                            "n": d.get("effective_n"),
+                            "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                            "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                        }
+                        for name, d in families.items()
+                    }
+                    for h, families in (v25_evidence.get("hypotheses") or {}).items()
+                },
+                "best_validated_hypothesis": v25_evidence.get("best_validated_hypothesis"),
+                "promotion": v25_evidence.get("promotion"),
             }
             print("RESEARCH_V25_EVIDENCE", json.dumps(compact, default=str), flush=True)
         except Exception as exc:
