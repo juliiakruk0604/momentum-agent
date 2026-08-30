@@ -11,6 +11,7 @@ from src.v24.bybit_ws import BybitSpotStream
 from src.v24.challenger import V24EventShadow
 from src.v24.linear_ws import BybitLinearContextStream
 from src.v24.binance_ws import BinanceTradeStream, available_symbols as binance_available_symbols
+from src.v24.okx_ws import OKXTradeStream, available_symbols as okx_available_symbols
 
 
 class V24Runtime:
@@ -95,18 +96,21 @@ async def main_async():
     linear_symbols = [s for s in symbols if s in linear_set]
 
     binance_symbols = binance_available_symbols(symbols)
+    okx_symbols = okx_available_symbols(symbols)
 
     runtime = V24Runtime(store, symbols)
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
     linear_stream = BybitLinearContextStream(linear_symbols)
     binance_stream = BinanceTradeStream(binance_symbols)
+    okx_stream = OKXTradeStream(okx_symbols)
 
     print("V24_STREAM_START", json.dumps({
         "symbols": symbols,
         "linear_symbols": linear_symbols,
         "binance_symbols": binance_symbols,
+        "okx_symbols": okx_symbols,
         "live_execution": False,
-    }), flush=True)
+    }, default=str), flush=True)
 
     async def status_loop():
         while True:
@@ -114,6 +118,7 @@ async def main_async():
             status["generated_at_ms"] = int(time.time() * 1000)
             status["linear_stream"] = linear_stream.status()
             status["binance_stream"] = binance_stream.status()
+            status["okx_stream"] = okx_stream.status()
             store.set_runtime("v24_stream_status", status)
             print("V24_STREAM_STATUS", json.dumps(status, default=str), flush=True)
             await asyncio.sleep(max(10, int(os.getenv("V24_STATUS_SECONDS", "30"))))
@@ -186,16 +191,28 @@ async def main_async():
                     symbol = feature.get("symbol")
                     context = linear_stream.context(symbol, now_ms)
                     bctx = binance_stream.context(symbol, now_ms)
+                    octx = okx_stream.context(symbol, now_ms)
                     b1 = float(((bctx.get("trade_1s") or {}).get("price_move_pct") or 0.0))
                     b5 = float(((bctx.get("trade_5s") or {}).get("price_move_pct") or 0.0))
+                    o1 = float(((octx.get("trade_1s") or {}).get("price_move_pct") or 0.0))
+                    o5 = float(((octx.get("trade_5s") or {}).get("price_move_pct") or 0.0))
                     y1 = float(feature.get("price_move_1s_pct") or 0.0)
                     y5 = float(feature.get("price_move_5s_pct") or 0.0)
+                    ext1 = [x for x,ok in ((b1,bool(bctx.get("available"))),(o1,bool(octx.get("available")))) if ok]
+                    ext5 = [x for x,ok in ((b5,bool(bctx.get("available"))),(o5,bool(octx.get("available")))) if ok]
+                    consensus1 = sum(ext1)/len(ext1) if ext1 else 0.0
+                    consensus5 = sum(ext5)/len(ext5) if ext5 else 0.0
                     cross = {
                         "binance_available": bool(bctx.get("available")),
+                        "okx_available": bool(octx.get("available")),
                         "binance_trade_1s": bctx.get("trade_1s"),
                         "binance_trade_5s": bctx.get("trade_5s"),
-                        "binance_minus_bybit_move_1s_pct": b1 - y1,
-                        "binance_minus_bybit_move_5s_pct": b5 - y5,
+                        "okx_trade_1s": octx.get("trade_1s"),
+                        "okx_trade_5s": octx.get("trade_5s"),
+                        "external_consensus_move_1s_pct": consensus1,
+                        "external_consensus_move_5s_pct": consensus5,
+                        "external_minus_bybit_move_1s_pct": consensus1 - y1,
+                        "external_minus_bybit_move_5s_pct": consensus5 - y5,
                         "auto_weight_in_signal": False,
                     }
                     enriched.append({
@@ -250,6 +267,7 @@ async def main_async():
         stream.run_forever(),
         linear_stream.run_forever(),
         binance_stream.run_forever(),
+        okx_stream.run_forever(),
         status_loop(),
         parity_loop(),
         decision_loop(),
