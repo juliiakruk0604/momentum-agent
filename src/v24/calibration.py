@@ -108,6 +108,9 @@ FEATURES = {
     "base_ret3_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "ret_3m_percentile")),
     "base_volume_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "volume_accel_percentile")),
     "base_composite_percentile": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "cross_section", "composite_percentile")),
+    "base_ret3_over_rv": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "normalized_momentum", "ret_3m_over_rv")),
+    "base_ret5_over_rv": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "normalized_momentum", "ret_5m_over_rv")),
+    "base_rs5_over_rv": ("base_momentum", "high", lambda s: _nested(s, "base_momentum", "normalized_momentum", "rs_5m_over_rv")),
 }
 
 
