@@ -92,6 +92,14 @@ def main():
                 )
                 store.set_runtime("v22_fast_scan", fast_result)
                 store.set_runtime("v22_fast_scan_bucket", fast_bucket)
+                for candidate in fast_result.get("candidates") or []:
+                    snapshot = {
+                        **candidate,
+                        "snapshot_time": fast_result.get("generated_at"),
+                        "generated_at": fast_result.get("generated_at"),
+                    }
+                    store.upsert_v22_flow_snapshot(snapshot)
+                store.set_runtime("v22_flow_snapshot_stats", store.v22_flow_snapshot_stats())
                 heartbeat["fast_scan"] = {
                     "performed": True,
                     "candidate_count": fast_result.get("candidate_count"),
