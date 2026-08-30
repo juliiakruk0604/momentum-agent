@@ -100,6 +100,7 @@ async def main_async():
 
     runtime = V24Runtime(store, symbols)
     last_feature_archive_ms = 0
+    last_price_tick_ms = 0
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
     linear_stream = BybitLinearContextStream(linear_symbols)
     binance_stream = BinanceTradeStream(binance_symbols)
@@ -223,7 +224,29 @@ async def main_async():
                     })
                 ranked = enriched
 
-                nonlocal last_feature_archive_ms
+                nonlocal last_feature_archive_ms, last_price_tick_ms
+
+                price_tick_interval_ms = int(
+                    max(0.5, float(os.getenv("V24_PRICE_TICK_SECONDS", "1.0"))) * 1000
+                )
+                if now_ms - last_price_tick_ms >= price_tick_interval_ms:
+                    written = store.insert_v24_price_ticks_batch(now_ms, ranked)
+                    if written:
+                        last_price_tick_ms = now_ms
+                        if store.get_runtime("v24_price_tick_started") is None:
+                            store.set_runtime("v24_price_tick_started", {
+                                "started_ms": now_ms,
+                                "symbols": written,
+                                "version": "price_tick_v2",
+                            })
+                    retention_hours = max(
+                        2,
+                        int(os.getenv("V24_PRICE_TICK_RETENTION_HOURS", "6")),
+                    )
+                    store.prune_v24_price_ticks(
+                        now_ms - retention_hours * 3600 * 1000
+                    )
+
                 archive_interval_ms = int(
                     max(1.0, float(os.getenv("V24_FEATURE_ARCHIVE_SECONDS", "5"))) * 1000
                 )
