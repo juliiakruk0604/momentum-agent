@@ -181,6 +181,8 @@ def _maybe_open(store, state):
         return
 
     current = next((x for x in scan.get("candidates") or [] if x.get("symbol") == armed.get("symbol")), None)
+    if current is not None:
+        current = {**current, "_scan_generated_at": scan.get("generated_at")}
     decision = confirmation_decision(armed, current, now=_now())
     state["last_confirmation"] = decision
 
