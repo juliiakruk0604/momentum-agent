@@ -89,3 +89,15 @@ def monte_carlo(trades, starting_equity=15.0, simulations=2000, seed=42):
         "max_drawdown_p95": q(drawdowns, 0.95),
         "probability_finish_below_start": sum(x < float(starting_equity) for x in endings) / len(endings),
     }
+
+
+def grouped_trade_metrics(trades, key, starting_equity=15.0):
+    groups = {}
+    for trade in trades:
+        value = str(trade.get(key) or "UNKNOWN")
+        groups.setdefault(value, []).append(trade)
+    out = {}
+    for value, subset in groups.items():
+        metrics = trade_metrics(subset, starting_equity=starting_equity)
+        out[value] = {k: v for k, v in metrics.items() if k != "equity_curve"}
+    return out
