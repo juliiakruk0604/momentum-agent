@@ -97,6 +97,98 @@ def _perp_ok(s):
     )
 
 
+
+def _base_parts(s):
+    base = s.get("base_momentum") or {}
+    ff = base.get("fast_features") or {}
+    cs = base.get("cross_section") or {}
+    nm = base.get("normalized_momentum") or {}
+    return base, ff, cs, nm
+
+
+def _research_cross_section_momentum(s):
+    base, ff, cs, nm = _base_parts(s)
+    if not base or not cs:
+        return False
+    age = _signal_age_seconds(s)
+    return all([
+        age is not None and age <= 150.0,
+        _f(cs.get("composite_percentile")) >= 0.80,
+        _f(cs.get("rs_5m_percentile")) >= 0.75,
+        _f(ff.get("ret_3m_pct")) > 0.0,
+        _f(nm.get("rs_5m_over_rv")) >= 0.75,
+        _f(ff.get("current_move_pct")) <= 0.80,
+    ])
+
+
+def _research_volume_breakout(s):
+    base, ff, cs, nm = _base_parts(s)
+    if not base or not cs:
+        return False
+    age = _signal_age_seconds(s)
+    return all([
+        age is not None and age <= 150.0,
+        _f(cs.get("volume_accel_percentile")) >= 0.85,
+        _f(cs.get("rs_5m_percentile")) >= 0.60,
+        _f(ff.get("volume_acceleration")) >= 1.50,
+        _f(ff.get("ret_3m_pct")) > 0.0,
+        _f(ff.get("current_move_pct")) <= 0.90,
+    ])
+
+
+def _research_normalized_continuation(s):
+    base, ff, cs, nm = _base_parts(s)
+    if not base:
+        return False
+    age = _signal_age_seconds(s)
+    return all([
+        age is not None and age <= 150.0,
+        _f(nm.get("ret_3m_over_rv")) >= 1.00,
+        _f(nm.get("rs_5m_over_rv")) >= 0.75,
+        _f(ff.get("ret_5m_pct")) > 0.0,
+        _f(ff.get("price_acceleration")) >= -0.03,
+        _f(ff.get("current_move_pct")) <= 0.80,
+    ])
+
+
+def _research_liquidation_reversal(s):
+    perp = s.get("perp_context") or {}
+    liq = perp.get("liquidation_5s") or {}
+    seq = s.get("sequence_context") or {}
+    long_liq = _f(liq.get("long_liq_notional"))
+    depth = max(_f(s.get("bid_depth_5_usdt")) + _f(s.get("ask_depth_5_usdt")), 1.0)
+    return all([
+        long_liq >= 5000.0,
+        long_liq / depth >= 0.25,
+        _f(s.get("price_move_5s_pct")) <= -0.05,
+        _f(seq.get("book_imbalance_mean_3s")) >= 0.0,
+        _f(seq.get("buy_ratio_mean_3s"), 0.5) >= 0.52,
+    ])
+
+
+def _research_short_squeeze(s):
+    base, ff, cs, nm = _base_parts(s)
+    perp = s.get("perp_context") or {}
+    liq = perp.get("liquidation_5s") or {}
+    short_liq = _f(liq.get("short_liq_notional"))
+    return all([
+        bool(base),
+        short_liq >= 5000.0,
+        _f(ff.get("rs_5m_pct")) > 0.0,
+        _f(ff.get("ret_3m_pct")) > 0.0,
+        _f(nm.get("rs_5m_over_rv")) >= 0.50,
+        _cross_ok(s),
+    ])
+
+
+RESEARCH_HYPOTHESES = {
+    "cross_section_momentum": _research_cross_section_momentum,
+    "volume_breakout": _research_volume_breakout,
+    "normalized_continuation": _research_normalized_continuation,
+    "liquidation_reversal": _research_liquidation_reversal,
+    "short_squeeze_continuation": _research_short_squeeze,
+}
+
 VARIANTS = {
     "base_only": lambda s: _base_ok(s),
     "base_regime": lambda s: _base_ok(s) and _regime_ok(s),
@@ -192,7 +284,7 @@ def _metrics(rows):
 
 
 def run_v25_evidence(store):
-    result={"engine":"MomentumAgentV2.5","mode":"LAYER_ABLATION_PURGED","auto_apply":False,"horizons":{}}
+    result={"engine":"MomentumAgentV2.5","mode":"LAYER_ABLATION_PURGED","auto_apply":False,"horizons":{},"hypotheses":{}}
     for horizon in (300,900,1800):
         raw=store.v24_labeled_snapshots(horizon, limit=30000)
         h={"raw_n":len(raw),"variants":{}}
@@ -250,5 +342,26 @@ def run_v25_evidence(store):
 
     promotion["candidate_promotable"] = len(promotion["reasons"]) == 0
     result["promotion"] = promotion
+
+    best = None
+    for horizon, families in result["hypotheses"].items():
+        for name, d in families.items():
+            valid = d.get("validation") or {}
+            n = int(valid.get("n") or 0)
+            spot = valid.get("avg_spot_net_pct")
+            perp = valid.get("avg_perp1x_fee_cf_pct")
+            if n < int(os.getenv("V25_HYPOTHESIS_MIN_VALIDATION_N", "15")):
+                continue
+            candidate = {
+                "horizon_seconds": int(horizon),
+                "name": name,
+                "validation_n": n,
+                "spot_net_pct": spot,
+                "perp1x_fee_cf_pct": perp,
+            }
+            key = float(perp if perp is not None else -999.0)
+            if best is None or key > float(best.get("perp1x_fee_cf_pct") or -999.0):
+                best = candidate
+    result["best_validated_hypothesis"] = best
     store.set_runtime("v25_evidence",result)
     return result
