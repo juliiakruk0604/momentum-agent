@@ -332,3 +332,11 @@ def execution_preflight(equity_usdt: float):
         "plan": plan.to_dict(),
         "execution_enabled": False,
     }
+
+
+@app.get("/bybit/account-test")
+def bybit_account_test():
+    try:
+        return account_diagnostic()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"bybit_account_test_failed: {exc}")
