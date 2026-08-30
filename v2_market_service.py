@@ -11,6 +11,7 @@ from src.v2.engine import scan_v2
 from src.v2.shadow import process_v2_shadow
 from src.v22.engine import scan_fast_v22
 from src.v22.shadow import process_v22_shadow
+from src.v23.shadow import process_v23_shadow
 
 
 def _fast_bucket(now=None):
@@ -35,6 +36,7 @@ def main():
     first = True
     last_action_fingerprint = None
     last_v22_fingerprint = None
+    last_v23_fingerprint = None
 
     print("V2_MARKET_SERVICE_START", json.dumps({
         "loop_seconds": sleep_seconds,
@@ -52,6 +54,7 @@ def main():
             "shadow": None,
             "fast_scan": None,
             "v22_shadow": None,
+            "v23_shadow": None,
             "error": None,
             "live_execution": False,
         }
