@@ -99,6 +99,12 @@ def flow_score(book, trades):
     if t.get("ok"):
         buy_ratio = float(t.get("recent_buy_ratio", t["buy_ratio"]))
         signed_ratio = float(t.get("recent_signed_notional_ratio", t["signed_notional_ratio"]))
-        score += 35.0 * min(max((buy_ratio - 0.50) / 0.25, 0.0), 1.0)
-        score += 20.0 * min(max(signed_ratio, 0.0) / 0.35, 1.0)
+        count_conf = min(float(t.get("recent_trade_count") or 0.0) / 30.0, 1.0)
+        notional_conf = min(float(t.get("recent_notional") or 0.0) / 5000.0, 1.0)
+        confidence = (count_conf * notional_conf) ** 0.5
+        t["flow_confidence"] = confidence
+        score += confidence * 35.0 * min(max((buy_ratio - 0.50) / 0.25, 0.0), 1.0)
+        score += confidence * 20.0 * min(max(signed_ratio, 0.0) / 0.35, 1.0)
+    else:
+        t["flow_confidence"] = 0.0
     return round(max(0.0, min(100.0, score)), 2), b, t
