@@ -17,6 +17,17 @@ def _ms(ts):
     return int(_utc(ts).timestamp() * 1000)
 
 
+def _float_grid(name, default):
+    raw = os.getenv(name, default)
+    out = []
+    for part in str(raw).split(","):
+        try:
+            out.append(float(part.strip()))
+        except Exception:
+            pass
+    return out or [float(default.split(",")[0])]
+
+
 class V22RunnerReplay:
     STATE_KEY = "v22_runner_replay_state"
 
@@ -64,34 +75,59 @@ class V22RunnerReplay:
             _ms(end),
             category="spot",
         )
-        result = evaluate_runner_path(
-            bars1m=bars,
-            entry_time=entry_time,
-            entry_price=float(trade["entry_price"]),
-            notional_usdt=float(trade.get("notional_usdt") or 5.0),
-            initial_stop_pct=float(trade.get("stop_pct") or 1.0),
-            fee_rate=float(os.getenv("V2_FEE_RATE", "0.001")),
-            entry_slippage_pct=0.0,
-            exit_slippage_pct=float(os.getenv("V2_EXIT_SLIPPAGE_PCT", "0.05")),
-            partial_r=float(os.getenv("V22_PARTIAL_R", "1.5")),
-            partial_fraction=float(os.getenv("V22_PARTIAL_FRACTION", "0.5")),
-            trail_pct=float(os.getenv("V22_TRAIL_PCT", "1.2")),
-            breakeven_buffer_pct=float(os.getenv("V22_BREAKEVEN_BUFFER_PCT", "0.30")),
-            max_hold_minutes=max_hold,
-        )
+        partial_grid = _float_grid("V22_REPLAY_PARTIAL_R_GRID", "1.2,1.5,2.0")
+        trail_grid = _float_grid("V22_REPLAY_TRAIL_GRID", "0.8,1.2,1.8")
+        variants = {}
+        for partial_r in partial_grid:
+            for trail_pct in trail_grid:
+                r = evaluate_runner_path(
+                    bars1m=bars,
+                    entry_time=entry_time,
+                    entry_price=float(trade["entry_price"]),
+                    notional_usdt=float(trade.get("notional_usdt") or 5.0),
+                    initial_stop_pct=float(trade.get("stop_pct") or 1.0),
+                    fee_rate=float(os.getenv("V2_FEE_RATE", "0.001")),
+                    entry_slippage_pct=0.0,
+                    exit_slippage_pct=float(os.getenv("V2_EXIT_SLIPPAGE_PCT", "0.05")),
+                    partial_r=partial_r,
+                    partial_fraction=float(os.getenv("V22_PARTIAL_FRACTION", "0.5")),
+                    trail_pct=trail_pct,
+                    breakeven_buffer_pct=float(os.getenv("V22_BREAKEVEN_BUFFER_PCT", "0.30")),
+                    max_hold_minutes=max_hold,
+                )
+                key = f"r{partial_r:g}_t{trail_pct:g}"
+                variants[key] = {
+                    "partial_r": partial_r,
+                    "trail_pct": trail_pct,
+                    "pnl_usdt": float(r.total_pnl_usdt),
+                    "partial_hit": r.partial_hit,
+                    "exit_reason": r.final_exit_reason,
+                    "exit_time": r.final_exit_time,
+                    "exit_price": r.final_exit_price,
+                }
+
+        primary_partial = float(os.getenv("V22_PARTIAL_R", "1.5"))
+        primary_trail = float(os.getenv("V22_TRAIL_PCT", "1.2"))
+        primary_key = f"r{primary_partial:g}_t{primary_trail:g}"
+        primary = variants.get(primary_key)
+        if primary is None:
+            primary_key = sorted(variants)[0]
+            primary = variants[primary_key]
+
+        fixed_pnl = float(trade.get("pnl_usdt") or 0.0)
         out = {
             **trade,
-            "source_fixed_pnl_usdt": float(trade.get("pnl_usdt") or 0.0),
-            "runner_pnl_usdt": float(result.total_pnl_usdt),
-            "pnl_usdt": float(result.total_pnl_usdt),
-            "runner_status": result.status,
-            "runner_partial_hit": result.partial_hit,
-            "runner_exit_reason": result.final_exit_reason,
-            "runner_exit_time": result.final_exit_time,
-            "runner_exit_price": result.final_exit_price,
-            "runner_highest_price": result.highest_price,
-            "runner_active_stop_price": result.active_stop_price,
-            "runner_delta_vs_fixed_usdt": float(result.total_pnl_usdt) - float(trade.get("pnl_usdt") or 0.0),
+            "source_fixed_pnl_usdt": fixed_pnl,
+            "runner_pnl_usdt": float(primary["pnl_usdt"]),
+            "pnl_usdt": float(primary["pnl_usdt"]),
+            "runner_status": "CLOSED",
+            "runner_partial_hit": bool(primary["partial_hit"]),
+            "runner_exit_reason": primary["exit_reason"],
+            "runner_exit_time": primary["exit_time"],
+            "runner_exit_price": primary["exit_price"],
+            "runner_delta_vs_fixed_usdt": float(primary["pnl_usdt"]) - fixed_pnl,
+            "runner_primary_variant": primary_key,
+            "runner_variants": variants,
             "runner_version": "2.2",
         }
         return out
@@ -148,6 +184,25 @@ class V22RunnerReplay:
         fixed_m = trade_metrics(fixed, starting_equity=start)
         runner_m = trade_metrics(runner, starting_equity=start)
 
+        variant_buckets = {}
+        for trade in runner:
+            for key, variant in (trade.get("runner_variants") or {}).items():
+                variant_buckets.setdefault(key, []).append({
+                    **trade,
+                    "pnl_usdt": float(variant.get("pnl_usdt") or 0.0),
+                })
+        variant_metrics = {}
+        for key, rows in variant_buckets.items():
+            m = trade_metrics(rows, starting_equity=start)
+            variant_metrics[key] = {
+                **{k: v for k, v in m.items() if k != "equity_curve"},
+                "delta_vs_fixed_total_usdt": round(
+                    sum(float(t.get("pnl_usdt") or 0.0) for t in rows)
+                    - sum(float(t.get("pnl_usdt") or 0.0) for t in fixed),
+                    8,
+                ),
+            }
+
         return {
             "source_dataset_id": state["source_dataset_id"],
             "complete": bool(state.get("complete")),
@@ -162,6 +217,7 @@ class V22RunnerReplay:
             ),
             "runner_by_setup": grouped_trade_metrics(runner, "setup", starting_equity=start),
             "runner_by_regime": grouped_trade_metrics(runner, "regime", starting_equity=start),
+            "variant_metrics": variant_metrics,
         }
 
     def run_batch(self, batch_size=1):
