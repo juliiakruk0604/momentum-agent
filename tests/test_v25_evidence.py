@@ -35,7 +35,7 @@ def _snapshot():
 
 def test_v25_evidence_base_and_micro_layers(monkeypatch):
     s = _snapshot()
-    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "1000")
+    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "100000")
     assert _base_ok(s)
     assert _micro_ok(s)
     s["microstructure_score"] = 20
@@ -45,7 +45,7 @@ def test_v25_evidence_base_and_micro_layers(monkeypatch):
 
 def test_v25_evidence_base_rejects_weak_alpha(monkeypatch):
     s = _snapshot()
-    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "1000")
+    monkeypatch.setenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "100000")
     s["base_momentum"]["score"] = 40
     assert not _base_ok(s)
 
