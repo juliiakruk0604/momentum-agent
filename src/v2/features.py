@@ -78,6 +78,7 @@ def compute_features(symbol, bars15, btc15, eth15, turnover_24h=0.0):
 
     return FeatureSnapshot(
         symbol=symbol,
+        signal_time=str(x.index[-1]),
         price=price,
         atr_pct=atr_pct,
         ret_15m_pct=_ret(close, 1),
