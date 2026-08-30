@@ -594,3 +594,46 @@ def v24_calibration():
         ),
         "live_execution": False,
     }
+
+
+@app.get("/v25/shadow")
+def v25_shadow():
+    row = store.get_runtime("v25_hybrid_shadow_summary")
+    value = None if row is None else row.get("value")
+    return {
+        "engine": "MomentumAgentV2.5",
+        "strategy": "HYBRID_MOMENTUM_MICROSTRUCTURE",
+        "shadow": value,
+        "live_execution": False,
+    }
+
+
+@app.get("/v25/readiness")
+def v25_readiness():
+    row = store.get_runtime("v25_hybrid_shadow_summary")
+    shadow = None if row is None else row.get("value")
+    shadow = shadow if isinstance(shadow, dict) else {}
+    diagnostics = shadow.get("diagnostics") or {}
+    trades = shadow.get("recent_trades") or []
+    reasons = []
+    if int(diagnostics.get("base_momentum_attached") or 0) <= 0:
+        reasons.append("no_fresh_base_momentum")
+    if len(trades) < 30:
+        reasons.append("insufficient_forward_trades")
+    expectancy = None
+    if trades:
+        expectancy = sum(float(t.get("pnl_usdt") or 0.0) for t in trades) / len(trades)
+        if expectancy <= 0:
+            reasons.append("forward_expectancy_nonpositive")
+    cal_row = store.get_runtime("v24_empirical_calibration")
+    calibration = None if cal_row is None else cal_row.get("value")
+    return {
+        "engine": "MomentumAgentV2.5",
+        "live_ready": False,
+        "live_execution": False,
+        "reasons": reasons or ["manual_live_gate_not_authorized"],
+        "shadow_closed_trades": len(trades),
+        "shadow_expectancy_usdt": expectancy,
+        "diagnostics": diagnostics,
+        "calibration_available": isinstance(calibration, dict),
+    }
