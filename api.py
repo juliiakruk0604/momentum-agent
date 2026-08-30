@@ -512,3 +512,27 @@ def v22_readiness():
 @app.get("/v22/flow-stats")
 def v22_flow_stats():
     return store.v22_flow_snapshot_stats()
+
+
+@app.get("/v24/status")
+def v24_status():
+    stream = store.get_runtime("v24_stream_status")
+    micro = store.get_runtime("v24_microstructure_latest")
+    return {
+        "engine": "MomentumAgentV2.4",
+        "stream": None if stream is None else stream.get("value"),
+        "microstructure": None if micro is None else micro.get("value"),
+        "live_execution": False,
+    }
+
+
+@app.get("/v24/microstructure")
+def v24_microstructure():
+    row = store.get_runtime("v24_microstructure_latest")
+    if row is None or not isinstance(row.get("value"), dict):
+        return {
+            "engine": "MomentumAgentV2.4",
+            "status": "waiting_for_websocket_data",
+            "live_execution": False,
+        }
+    return row["value"]
