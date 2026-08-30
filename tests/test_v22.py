@@ -118,3 +118,18 @@ def test_recent_trade_flow_prefers_recent_window():
     out = trade_flow_features(trades)
     assert out["recent_buy_ratio"] > out["buy_ratio"]
     assert out["recent_notional"] > 0
+
+
+def test_low_sample_trade_flow_is_confidence_discounted():
+    from src.v22.orderflow import flow_score
+    book = {
+        "bids": [(100, 50), (99.9, 20), (99.8, 20), (99.7, 10), (99.6, 10)],
+        "asks": [(100.01, 40), (100.1, 20), (100.2, 20), (100.3, 10), (100.4, 10)],
+    }
+    trades = [
+        {"time": 1000, "price": 100.01, "size": 0.05, "side": "Buy"},
+    ]
+    score, _, tf = flow_score(book, trades)
+    assert tf["recent_buy_ratio"] == 1.0
+    assert tf["flow_confidence"] < 0.1
+    assert score < 50
