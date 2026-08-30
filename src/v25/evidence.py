@@ -181,6 +181,27 @@ def _research_short_squeeze(s):
     ])
 
 
+def _research_efficient_trend_continuation(s):
+    base, ff, cs, nm = _base_parts(s)
+    if not base or not cs:
+        return False
+    age = _signal_age_seconds(s)
+    return all([
+        age is not None and age <= 150.0,
+        _f(ff.get("ret_3m_pct")) > 0.0,
+        _f(nm.get("ret_3m_over_rv")) >= 0.75,
+        _f(nm.get("rs_5m_over_rv")) >= 0.50,
+        _f(cs.get("trend_efficiency_30m_percentile")) >= 0.75,
+        _f(cs.get("amihud_30m_percentile"), 1.0) <= 0.65,
+        _f(ff.get("current_move_pct")) <= 0.80,
+    ])
+
+
+GEN2_HYPOTHESES = {
+    "efficient_trend_continuation": _research_efficient_trend_continuation,
+}
+
+
 RESEARCH_HYPOTHESES = {
     "cross_section_momentum": _research_cross_section_momentum,
     "volume_breakout": _research_volume_breakout,
@@ -322,13 +343,18 @@ def run_v25_evidence(store):
     boundary_row = store.get_runtime("v25_full_base_context_started")
     boundary = None if boundary_row is None else boundary_row.get("value")
     boundary_ms = int((boundary or {}).get("started_ms") or 0)
+    gen2_row = store.get_runtime("v25_slow_state_gen2_started")
+    gen2_boundary = None if gen2_row is None else gen2_row.get("value")
+    gen2_boundary_ms = int((gen2_boundary or {}).get("started_ms") or 0)
     result={
         "engine":"MomentumAgentV2.5",
         "mode":"LAYER_ABLATION_PURGED",
         "auto_apply":False,
         "generation_boundary":boundary,
+        "gen2_boundary":gen2_boundary,
         "horizons":{},
         "hypotheses":{},
+        "gen2_hypotheses":{},
     }
     for horizon in (300,900,1800):
         raw=store.v24_labeled_snapshots_with_base(
@@ -378,6 +404,24 @@ def run_v25_evidence(store):
                 "research_only": True,
             }
         result["hypotheses"][str(horizon)] = hyp
+
+        gen2 = {}
+        gen2_rows = [
+            r for r in raw
+            if gen2_boundary_ms > 0 and int(r.get("snapshot_ms") or 0) >= gen2_boundary_ms
+        ]
+        for name, gate in GEN2_HYPOTHESES.items():
+            selected = [r for r in gen2_rows if gate(r.get("snapshot") or {})]
+            selected = _nonoverlap(selected, horizon)
+            train, valid = _split(selected, horizon)
+            gen2[name] = {
+                "effective_n": len(selected),
+                "train": _metrics(train),
+                "validation": _metrics(valid),
+                "research_only": True,
+                "hypothesis_generation": 2,
+            }
+        result["gen2_hypotheses"][str(horizon)] = gen2
 
     promotion = {
         "candidate_promotable": False,
