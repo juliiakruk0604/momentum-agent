@@ -95,6 +95,8 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
     ret3_pct = _percentile_map(all_fast, lambda x: x.ret_3m_pct)
     volacc_pct = _percentile_map(all_fast, lambda x: x.volume_acceleration)
     score_pct = _percentile_map(all_fast, lambda x: x.coarse_score)
+    efficiency_pct = _percentile_map(all_fast, lambda x: x.trend_efficiency_30m)
+    amihud_pct = _percentile_map(all_fast, lambda x: x.amihud_30m_pct_per_m_usdt)
 
     fast_universe = []
     for f in all_fast:
@@ -127,6 +129,8 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
                 "ret_3m_percentile": round(float(ret3_pct.get(f.symbol, 0.0)), 6),
                 "volume_accel_percentile": round(float(volacc_pct.get(f.symbol, 0.0)), 6),
                 "coarse_score_percentile": round(float(score_pct.get(f.symbol, 0.0)), 6),
+                "trend_efficiency_30m_percentile": round(float(efficiency_pct.get(f.symbol, 0.0)), 6),
+                "amihud_30m_percentile": round(float(amihud_pct.get(f.symbol, 0.0)), 6),
                 "composite_percentile": round(
                     0.40 * float(rs_pct.get(f.symbol, 0.0))
                     + 0.30 * float(ret3_pct.get(f.symbol, 0.0))
