@@ -486,3 +486,18 @@ def v22_shadow_pnl():
             "live_execution": False,
         }
     return v22_shadow_summary(row["value"])
+
+
+@app.get("/v22/replay-status")
+def v22_replay_status():
+    state_row = store.get_runtime("v22_runner_replay_state")
+    summary_row = store.get_runtime("v22_runner_replay_summary")
+    error_row = store.get_runtime("v22_runner_replay_error")
+    return {
+        "engine": "MomentumAgentV2.2",
+        "mode": "RUNNER_AB_REPLAY",
+        "state": None if state_row is None else state_row.get("value"),
+        "summary": None if summary_row is None else summary_row.get("value"),
+        "error": None if error_row is None else error_row.get("value"),
+        "live_execution": False,
+    }
