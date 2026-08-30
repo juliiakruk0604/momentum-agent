@@ -118,6 +118,7 @@ def scan_v2(provider=None, universe_limit=None):
     return {
         "engine": "MomentumAgentV2",
         "mode": "SHADOW_ONLY",
+        "strategy_version": os.getenv("V2_STRATEGY_VERSION", "2.1"),
         "generated_at": str(pd.Timestamp.now(tz="UTC")),
         "spot_is_execution_truth": True,
         "perp_features_auxiliary_only": True,
