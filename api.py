@@ -10,6 +10,7 @@ from src.promo_scanner import scan_promos
 from src.bybit_account import funding_balances
 from src.execution.bybit_spot import dry_run_suite
 from src.shadow_portfolio import summary as shadow_summary
+from src.v2.shadow import summary as v2_shadow_summary
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -401,3 +402,36 @@ def shadow_pnl():
             "starting_equity_usdt": float(os.getenv("SHADOW_START_EQUITY_USDT", "15")),
         }
     return shadow_summary(row["value"])
+
+
+@app.get("/v2/status")
+def v2_status():
+    row = store.get_runtime("v2_scan")
+    value = None if row is None else row.get("value")
+    if not isinstance(value, dict):
+        return {
+            "engine": "MomentumAgentV2",
+            "mode": "SHADOW_ONLY",
+            "status": "waiting_for_first_scan",
+            "live_execution": False,
+        }
+    return {
+        **value,
+        "live_execution": False,
+    }
+
+
+@app.get("/v2/shadow-pnl")
+def v2_shadow_pnl():
+    row = store.get_runtime("v2_shadow_portfolio")
+    if row is None or not isinstance(row.get("value"), dict):
+        return {
+            "mode": "V2_LIVE_SHADOW_1M_PATH",
+            "status": "not_started",
+            "starting_equity_usdt": float(os.getenv("V2_SHADOW_START_EQUITY_USDT", "15")),
+            "live_execution": False,
+        }
+    return {
+        **v2_shadow_summary(row["value"]),
+        "live_execution": False,
+    }
