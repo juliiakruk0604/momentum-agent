@@ -537,6 +537,33 @@ class SignalStore:
         )
         return rows
 
+    def v22_labeled_snapshots(self, horizon_minutes: int, limit: int = 5000):
+        rows = self._execute(
+            '''SELECT s.snapshot_time,s.symbol,s.payload_json,l.payload_json AS label_json
+               FROM v22_flow_snapshots s
+               JOIN v22_flow_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_time=s.snapshot_time
+               WHERE l.horizon_minutes=?
+               ORDER BY s.snapshot_time ASC LIMIT ?''',
+            '''SELECT s.snapshot_time,s.symbol,s.payload_json,l.payload_json AS label_json
+               FROM v22_flow_snapshots s
+               JOIN v22_flow_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_time=s.snapshot_time
+               WHERE l.horizon_minutes=%s
+               ORDER BY s.snapshot_time ASC LIMIT %s''',
+            (int(horizon_minutes), int(limit)),
+            fetch="all",
+        )
+        out = []
+        for row in rows:
+            out.append({
+                "snapshot_time": str(row.get("snapshot_time")),
+                "symbol": row.get("symbol"),
+                "snapshot": _loads(row.get("payload_json")) or {},
+                "label": _loads(row.get("label_json")) or {},
+            })
+        return out
+
     def set_runtime(self, key: str, value):
         payload = json.dumps(value, default=str)
         self._execute(
