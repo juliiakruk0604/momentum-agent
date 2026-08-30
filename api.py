@@ -11,6 +11,7 @@ from src.bybit_account import funding_balances
 from src.execution.bybit_spot import dry_run_suite
 from src.shadow_portfolio import summary as shadow_summary
 from src.v2.shadow import summary as v2_shadow_summary
+from src.v2.readiness import evaluate_v2_readiness
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -453,3 +454,8 @@ def v2_backtest_status():
         "error": error,
         "live_execution": False,
     }
+
+
+@app.get("/v2/readiness")
+def v2_readiness():
+    return evaluate_v2_readiness(store)
