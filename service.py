@@ -63,6 +63,10 @@ def main():
         from v2_market_service import main as run_v2_market
         run_v2_market()
         return
+    if mode == "v24-stream":
+        from v24_stream_service import main as run_v24_stream
+        run_v24_stream()
+        return
     if mode == "all":
         t = threading.Thread(target=run_worker, name="market-worker", daemon=True)
         t.start()
