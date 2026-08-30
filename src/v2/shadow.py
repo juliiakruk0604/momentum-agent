@@ -30,6 +30,7 @@ def _new_state():
         "open_position": None,
         "trades": [],
         "seen_signal_keys": [],
+        "last_entry_by_setup": {},
         "fees_usdt": 0.0,
         "realized_pnl_usdt": 0.0,
         "unrealized_pnl_usdt": 0.0,
@@ -51,6 +52,26 @@ def _load(store):
 def _save(store, state):
     state["last_updated_at"] = str(_now())
     store.set_runtime(KEY, state)
+
+
+def _today_realized(state):
+    today = _now().date().isoformat()
+    total = 0.0
+    count = 0
+    for trade in state.get("trades") or []:
+        raw = trade.get("exit_time")
+        if not raw:
+            continue
+        try:
+            ts = pd.Timestamp(raw)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+        except Exception:
+            continue
+        if ts.date().isoformat() == today:
+            total += float(trade.get("pnl_usdt") or 0.0)
+            count += 1
+    return total, count
 
 
 def _signal_key(scan, candidate):
@@ -148,6 +169,24 @@ def _maybe_open(provider, store, state):
     if not isinstance(scan, dict):
         return
 
+    realized_today, trades_today = _today_realized(state)
+    daily_stop = float(os.getenv("V2_DAILY_STOP_USDT", "0.50"))
+    max_trades_day = int(os.getenv("V2_MAX_TRADES_PER_DAY", "2"))
+    if realized_today <= -daily_stop:
+        state["last_rejection"] = {
+            "time": str(_now()),
+            "reason": "daily_loss_stop",
+            "realized_today_usdt": realized_today,
+        }
+        return
+    if trades_today >= max_trades_day:
+        state["last_rejection"] = {
+            "time": str(_now()),
+            "reason": "daily_trade_limit",
+            "trades_today": trades_today,
+        }
+        return
+
     seen = set(state.get("seen_signal_keys") or [])
     candidates = [
         x for x in (scan.get("candidates") or [])
@@ -161,6 +200,27 @@ def _maybe_open(provider, store, state):
     key = _signal_key(scan, candidate)
     if key in seen:
         return
+
+    cooldown_minutes = int(os.getenv("V2_SETUP_COOLDOWN_MINUTES", "60"))
+    setup_key = f"{candidate.get('symbol')}:{candidate.get('setup')}"
+    last_entries = state.get("last_entry_by_setup") or {}
+    last_raw = last_entries.get(setup_key)
+    if last_raw:
+        try:
+            last_ts = pd.Timestamp(last_raw)
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize("UTC")
+            if (_now() - last_ts).total_seconds() < cooldown_minutes * 60:
+                state["last_rejection"] = {
+                    "time": str(_now()),
+                    "reason": "setup_cooldown",
+                    "setup_key": setup_key,
+                }
+                seen.add(key)
+                state["seen_signal_keys"] = list(seen)[-500:]
+                return
+        except Exception:
+            pass
     seen.add(key)
     state["seen_signal_keys"] = list(seen)[-500:]
 
@@ -209,6 +269,7 @@ def _maybe_open(provider, store, state):
         "perp_features": candidate.get("perp_features"),
         "microstructure": micro,
     }
+    state.setdefault("last_entry_by_setup", {})[setup_key] = str(_now())
     state["last_action"] = {
         "time": str(_now()),
         "action": "SHADOW_OPEN",
