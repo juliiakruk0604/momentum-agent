@@ -15,6 +15,21 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
+def _signal_age_seconds(base: dict):
+    raw = base.get("signal_time") or (base.get("fast_features") or {}).get("signal_time")
+    if not raw:
+        return None
+    try:
+        import pandas as pd
+        ts = pd.Timestamp(raw)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        now = pd.Timestamp.now(tz="UTC")
+        return max(0.0, float((now - ts).total_seconds()))
+    except Exception:
+        return None
+
+
 def _base_gate(feature: dict, regime: str):
     blockers = []
     base = feature.get("base_momentum") or {}
@@ -34,6 +49,9 @@ def _base_gate(feature: dict, regime: str):
     volacc = _safe_float(ff.get("volume_acceleration"))
     cur = _safe_float(ff.get("current_move_pct"))
     price_accel = _safe_float(ff.get("price_acceleration"))
+    age_seconds = _signal_age_seconds(base)
+    if age_seconds is None or age_seconds > float(os.getenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "90")):
+        blockers.append("base_signal_stale")
 
     if score < float(os.getenv("V25_MIN_BASE_SCORE", "72")):
         blockers.append("base_score_low")
@@ -302,8 +320,22 @@ class V25HybridShadow:
             _safe_float(base_risk.get("target_pct"), max(1.5, stop_pct * 2.25)),
         )
 
-        entry_slip = float(os.getenv("V25_ENTRY_SLIPPAGE_PCT", "0.03"))
         fee_rate = float(os.getenv("V2_FEE_RATE", "0.001"))
+        entry_slip = float(os.getenv("V25_ENTRY_SLIPPAGE_PCT", "0.03"))
+        exit_slip = float(os.getenv("V25_EXIT_SLIPPAGE_PCT", "0.03"))
+        spread_pct = _safe_float(feature.get("spread_pct"))
+        roundtrip_cost_pct = 2.0 * fee_rate * 100.0 + entry_slip + exit_slip + spread_pct
+        min_net_reward_pct = float(os.getenv("V25_MIN_NET_REWARD_PCT", "1.00"))
+        if target_pct - roundtrip_cost_pct < min_net_reward_pct:
+            self.state["armed"] = None
+            self.state["last_rejection"] = {
+                "reason":"target_below_economic_hurdle",
+                "target_pct":target_pct,
+                "roundtrip_cost_pct":roundtrip_cost_pct,
+                "time_ms":_now_ms(),
+            }
+            return
+
         entry = ask * (1.0 + entry_slip / 100.0)
         notional = min(float(os.getenv("V25_MAX_NOTIONAL_USDT", "5")), _safe_float(self.state.get("equity_usdt")) * 0.34)
         if notional < 5.0:
