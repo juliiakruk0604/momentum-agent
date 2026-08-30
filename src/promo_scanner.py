@@ -15,7 +15,7 @@ SAFE_KEYWORDS = (
 )
 RISKY_KEYWORDS = (
     "futures", "perpetual", "derivative", "margin", "options",
-    "leverage", "copy trading",
+    "leverage", "copy trading", "perps", "tradfi",
 )
 
 
@@ -71,6 +71,10 @@ def _score(row: dict[str, Any], now_ms: int) -> PromoCandidate:
     if "hold" in haystack or "earn" in haystack:
         score += 10
         reasons.append("non_trading_path_possible")
+
+    if "hold & earn" in haystack or ("hold" in haystack and "earn" in haystack):
+        score += 20
+        reasons.append("hold_and_earn_preferred")
 
     if "airdrop" in haystack or "bonus" in haystack or "cashback" in haystack:
         score += 12
