@@ -140,3 +140,27 @@ def account_diagnostic() -> dict:
         "domain_attempts_before_success": domain_attempts,
         "execution_enabled": False,
     }
+
+
+def funding_balances(coins: tuple[str, ...] = ("USDT", "USDC", "BTC", "ETH")) -> dict:
+    base_url, _api_info, _attempts = _find_authenticated_base_url()
+    coin_list = ",".join(coins)
+    result = _signed_get(
+        base_url,
+        "/v5/asset/transfer/query-account-coins-balance",
+        {"accountType": "FUND", "coin": coin_list},
+    ).get("result") or {}
+
+    balances = []
+    for row in result.get("balance") or []:
+        balances.append({
+            "coin": row.get("coin"),
+            "wallet_balance": row.get("walletBalance"),
+            "transfer_balance": row.get("transferBalance"),
+            "bonus": row.get("bonus"),
+        })
+
+    return {
+        "account_type": result.get("accountType") or "FUND",
+        "balances": balances,
+    }
