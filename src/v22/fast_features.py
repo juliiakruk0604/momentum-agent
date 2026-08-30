@@ -18,6 +18,9 @@ class FastFeatures:
     realized_vol_20m_pct: float
     compression_ratio: float
     rs_5m_pct: float
+    amihud_30m_pct_per_m_usdt: float
+    trend_efficiency_30m: float
+    dollar_volume_30m_usdt: float
     coarse_score: float
     current_move_pct: float = 0.0
 
@@ -76,6 +79,16 @@ def compute_fast_features(symbol, bars1m, btc1m, eth1m):
     market5 = (_ret(btc_aligned, 5) + _ret(eth_aligned, 5)) / 2.0
     rs5 = ret5 - market5
 
+    r1_abs = r1.abs()
+    dollar_volume = (x["close"] * x["volume"]).clip(lower=0.0)
+    dv30 = float(dollar_volume.tail(30).sum())
+    dv_m = (dollar_volume.tail(30) / 1_000_000.0).clip(lower=1e-9)
+    amihud_30m = float((r1_abs.tail(30) / dv_m).mean())
+
+    gross_path = float(r1_abs.tail(30).sum())
+    net30 = abs(_ret(close, 30))
+    trend_efficiency_30m = 0.0 if gross_path <= 1e-12 else min(1.0, net30 / gross_path)
+
     score = 0.0
     score += 20.0 * min(max(ret3, 0.0) / max(rv * 3.0, 0.15), 1.0)
     score += 20.0 * min(max(ret5, 0.0) / max(rv * 5.0, 0.25), 1.0)
@@ -97,5 +110,8 @@ def compute_fast_features(symbol, bars1m, btc1m, eth1m):
         realized_vol_20m_pct=round(rv, 6),
         compression_ratio=round(compression_ratio, 6),
         rs_5m_pct=round(rs5, 6),
+        amihud_30m_pct_per_m_usdt=round(amihud_30m, 8),
+        trend_efficiency_30m=round(trend_efficiency_30m, 6),
+        dollar_volume_30m_usdt=round(dv30, 2),
         coarse_score=round(max(0.0, min(100.0, score)), 2),
     )
