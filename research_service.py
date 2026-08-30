@@ -44,8 +44,23 @@ def main():
             "errors": [],
         }
 
+        if v2 is not None:
+            try:
+                print("RESEARCH_V2_START", json.dumps({"cursor": (v2.state() or {}).get("cursor")}), flush=True)
+                result = v2.run_batch(v2_batch)
+                cycle["v2"] = result
+                store.set_runtime("v2_backtest_last_batch", result)
+                store.set_runtime("v2_backtest_error", None)
+                print("RESEARCH_V2", json.dumps(result, default=str), flush=True)
+            except Exception as exc:
+                err = {"component": "v2", "error": repr(exc), "time": str(pd.Timestamp.now(tz="UTC"))}
+                cycle["errors"].append(err)
+                store.set_runtime("v2_backtest_error", err)
+                print("RESEARCH_V2_ERROR", repr(exc), flush=True)
+
         if v1 is not None:
             try:
+                print("RESEARCH_V1_START", json.dumps({"cursor": (v1.state() or {}).get("cursor")}), flush=True)
                 rebuild = _prepare_provenance_rebuild(v1, store)
                 if rebuild is not None:
                     store.set_runtime("historical_backfill_rebuild", rebuild)
@@ -60,19 +75,6 @@ def main():
                 cycle["errors"].append(err)
                 store.set_runtime("historical_backfill_error", err)
                 print("RESEARCH_V1_ERROR", repr(exc), flush=True)
-
-        if v2 is not None:
-            try:
-                result = v2.run_batch(v2_batch)
-                cycle["v2"] = result
-                store.set_runtime("v2_backtest_last_batch", result)
-                store.set_runtime("v2_backtest_error", None)
-                print("RESEARCH_V2", json.dumps(result, default=str), flush=True)
-            except Exception as exc:
-                err = {"component": "v2", "error": repr(exc), "time": str(pd.Timestamp.now(tz="UTC"))}
-                cycle["errors"].append(err)
-                store.set_runtime("v2_backtest_error", err)
-                print("RESEARCH_V2_ERROR", repr(exc), flush=True)
 
         cycle["finished_at"] = str(pd.Timestamp.now(tz="UTC"))
         store.set_runtime("research_worker_heartbeat", cycle)
