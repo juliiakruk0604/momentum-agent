@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from src.store import SignalStore
 from src.execution.preflight import build_execution_plan
 from src.execution.exchange_constraints import bybit_linear_constraints
+from src.bybit_account import account_diagnostic
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
