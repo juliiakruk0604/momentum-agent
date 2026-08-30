@@ -5,6 +5,40 @@ import os
 from .models import RiskDecision
 
 
+def execution_cost_pct(micro):
+    fee_rate = float(os.getenv("V2_FEE_RATE", "0.001"))
+    entry_slip = float(os.getenv("V2_ENTRY_SLIPPAGE_PCT", "0.05"))
+    exit_slip = float(os.getenv("V2_EXIT_SLIPPAGE_PCT", "0.05"))
+    spread = float((micro or {}).get("spread_pct") or 0.0)
+    return 2.0 * fee_rate * 100.0 + entry_slip + exit_slip + spread
+
+
+def cost_adjusted_levels(stop_pct, target_pct, micro=None):
+    cost = execution_cost_pct(micro or {})
+    min_net_rr = float(os.getenv("V2_MIN_NET_RR", "1.60"))
+    max_target = float(os.getenv("V2_MAX_TARGET_PCT", "6.0"))
+    stop = float(stop_pct)
+    target = float(target_pct)
+    effective_risk = stop + cost
+    required_target = cost + min_net_rr * effective_risk
+    adjusted_target = max(target, required_target)
+    blocked = adjusted_target > max_target
+    adjusted_target = min(adjusted_target, max_target)
+    net_reward = max(0.0, adjusted_target - cost)
+    net_risk = effective_risk
+    net_rr = 0.0 if net_risk <= 0 else net_reward / net_risk
+    return {
+        "cost_pct": cost,
+        "stop_pct": stop,
+        "target_pct": adjusted_target,
+        "net_reward_pct": net_reward,
+        "net_risk_pct": net_risk,
+        "net_rr": net_rr,
+        "required_target_pct": required_target,
+        "blocked": blocked or net_rr < min_net_rr,
+    }
+
+
 def microstructure(provider, symbol):
     book = provider.orderbook(symbol, limit=25)
     bids, asks = book["bids"], book["asks"]
@@ -43,13 +77,17 @@ def risk_decision(candidate, micro, equity_usdt=15.0, realized_today_usdt=0.0, h
     if float(micro.get("depth_usdt") or 0.0) < min_depth:
         blockers.append("insufficient_depth")
 
+    levels = cost_adjusted_levels(candidate.stop_pct, candidate.target_pct, micro)
+    if levels["blocked"]:
+        blockers.append("net_rr_below_gate")
+
     notional = min(max_notional, max(0.0, float(equity_usdt) * 0.34))
-    risk_usdt = notional * float(candidate.stop_pct) / 100.0
+    risk_usdt = notional * float(levels["net_risk_pct"]) / 100.0
     max_risk = float(os.getenv("V2_MAX_RISK_USDT", "0.15"))
     if risk_usdt > max_risk:
         scale = max_risk / max(risk_usdt, 1e-9)
         notional *= scale
-        risk_usdt = max_risk
+        risk_usdt = notional * float(levels["net_risk_pct"]) / 100.0
 
     if notional < 5.0:
         blockers.append("below_typical_spot_minimum")
@@ -58,7 +96,7 @@ def risk_decision(candidate, micro, equity_usdt=15.0, realized_today_usdt=0.0, h
         allowed=len(blockers) == 0,
         notional_usdt=round(notional, 6),
         risk_usdt=round(risk_usdt, 6),
-        stop_pct=float(candidate.stop_pct),
-        target_pct=float(candidate.target_pct),
+        stop_pct=float(levels["stop_pct"]),
+        target_pct=float(levels["target_pct"]),
         blockers=blockers,
     )
