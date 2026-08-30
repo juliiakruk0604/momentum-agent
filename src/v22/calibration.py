@@ -32,6 +32,16 @@ def _f(value):
         return None
 
 
+def _wilson_lower(hits, n, z=1.6448536269514722):
+    if n <= 0:
+        return 0.0
+    p = float(hits) / float(n)
+    denom = 1.0 + z * z / n
+    centre = p + z * z / (2.0 * n)
+    margin = z * math.sqrt((p * (1.0 - p) + z * z / (4.0 * n)) / n)
+    return max(0.0, (centre - margin) / denom)
+
+
 def _metrics(rows):
     if not rows:
         return {
@@ -45,14 +55,22 @@ def _metrics(rows):
         }
     labels = [r["label"] for r in rows]
     n = len(labels)
+    h05 = sum(bool(x.get("hit_0_5")) for x in labels)
+    h1 = sum(bool(x.get("hit_1")) for x in labels)
+    h2 = sum(bool(x.get("hit_2")) for x in labels)
     return {
         "n": n,
         "avg_final_return_pct": sum(float(x.get("final_return_pct") or 0.0) for x in labels) / n,
         "avg_mfe_pct": sum(float(x.get("mfe_pct") or 0.0) for x in labels) / n,
         "avg_mae_pct": sum(float(x.get("mae_pct") or 0.0) for x in labels) / n,
-        "p_hit_0_5": sum(bool(x.get("hit_0_5")) for x in labels) / n,
-        "p_hit_1": sum(bool(x.get("hit_1")) for x in labels) / n,
-        "p_hit_2": sum(bool(x.get("hit_2")) for x in labels) / n,
+        "hit_0_5_count": h05,
+        "hit_1_count": h1,
+        "hit_2_count": h2,
+        "p_hit_0_5": h05 / n,
+        "p_hit_1": h1 / n,
+        "p_hit_2": h2 / n,
+        "p_hit_0_5_wilson_lower_90": _wilson_lower(h05, n),
+        "p_hit_1_wilson_lower_90": _wilson_lower(h1, n),
     }
 
 
@@ -92,8 +110,11 @@ def _subset(rows, getter, direction, threshold):
 
 
 def _score_rule(train_metrics, valid_metrics, base_train, base_valid):
-    if train_metrics["n"] < 10 or valid_metrics["n"] < 8:
+    min_train = int(os.getenv("V22_CALIBRATION_MIN_TRAIN_SUBSET", "25"))
+    min_valid = int(os.getenv("V22_CALIBRATION_MIN_VALID_SUBSET", "15"))
+    if train_metrics["n"] < min_train or valid_metrics["n"] < min_valid:
         return None
+
     bt = float(base_train.get("p_hit_0_5") or 0.0)
     bv = float(base_valid.get("p_hit_0_5") or 0.0)
     tt = float(train_metrics.get("p_hit_0_5") or 0.0)
@@ -102,16 +123,37 @@ def _score_rule(train_metrics, valid_metrics, base_train, base_valid):
     mfe_v = float(valid_metrics.get("avg_mfe_pct") or 0.0)
     ret_t = float(train_metrics.get("avg_final_return_pct") or 0.0)
     ret_v = float(valid_metrics.get("avg_final_return_pct") or 0.0)
+    base_mfe_t = float(base_train.get("avg_mfe_pct") or 0.0)
+    base_mfe_v = float(base_valid.get("avg_mfe_pct") or 0.0)
 
     train_lift = tt - bt
     valid_lift = tv - bv
-    robust = train_lift > 0 and valid_lift > 0 and mfe_t > 0 and mfe_v > 0
-    score = valid_lift * 3.0 + train_lift + max(mfe_v, 0.0) + max(ret_v, 0.0) * 0.5
+    train_lower = float(train_metrics.get("p_hit_0_5_wilson_lower_90") or 0.0)
+    valid_lower = float(valid_metrics.get("p_hit_0_5_wilson_lower_90") or 0.0)
+
+    robust = (
+        train_lift > 0
+        and valid_lift > 0
+        and train_lower > bt
+        and valid_lower > bv
+        and mfe_t > base_mfe_t
+        and mfe_v > base_mfe_v
+        and ret_t >= 0.0
+        and ret_v > 0.0
+    )
+    score = (
+        valid_lift * 3.0
+        + train_lift
+        + max(mfe_v - base_mfe_v, 0.0)
+        + max(ret_v, 0.0) * 0.5
+    )
     return {
         "robust": robust,
         "score": round(score, 6),
         "train_hit_0_5_lift": round(train_lift, 6),
         "valid_hit_0_5_lift": round(valid_lift, 6),
+        "train_wilson_lower_vs_baseline": round(train_lower - bt, 6),
+        "valid_wilson_lower_vs_baseline": round(valid_lower - bv, 6),
     }
 
 
@@ -159,6 +201,15 @@ def calibrate_horizon(store, horizon_minutes=5):
 
     rules.sort(key=lambda r: (bool(r["robust"]), float(r["score"])), reverse=True)
     robust = [r for r in rules if r["robust"]]
+    robust_counts = {}
+    for r in robust:
+        robust_counts[r["feature"]] = robust_counts.get(r["feature"], 0) + 1
+    stable_feature_families = sorted(
+        [name for name, count in robust_counts.items() if count >= 2]
+    )
+    stable_robust = [
+        r for r in robust if r["feature"] in stable_feature_families
+    ]
 
     return {
         "horizon_minutes": int(horizon_minutes),
@@ -169,8 +220,10 @@ def calibrate_horizon(store, horizon_minutes=5):
         "baseline_train": base_train,
         "baseline_validation": base_valid,
         "robust_rule_count": len(robust),
+        "stable_feature_families": stable_feature_families,
+        "stable_robust_rule_count": len(stable_robust),
         "rules": rules[:30],
-        "recommended_single_feature_rules": robust[:8],
+        "recommended_single_feature_rules": stable_robust[:8],
         "auto_apply": False,
     }
 
