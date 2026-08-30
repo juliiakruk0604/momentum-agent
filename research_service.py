@@ -9,6 +9,7 @@ import pandas as pd
 from src.historical_backfill import HistoricalBackfillRunner
 from src.providers.bybit_public import BybitPublicProvider
 from src.store import SignalStore
+from src.v22.replay import V22RunnerReplay
 from src.v2.backtest import (
     V2BacktestRunner,
     _strategy_config_snapshot,
