@@ -53,6 +53,71 @@ def _ensure_v2_provenance(v2: V2BacktestRunner):
     return state
 
 
+def _run_v25_cycle(store, cycle):
+    """Run the decision-critical evidence pass before any research backlog."""
+    started_at = pd.Timestamp.now(tz="UTC")
+    try:
+        v25_evidence = run_v25_evidence(store)
+        cycle["v25_evidence"] = v25_evidence
+        store.set_runtime("v25_evidence_error", None)
+        compact = {
+            "started_at": str(started_at),
+            "finished_at": str(pd.Timestamp.now(tz="UTC")),
+            "priority": "first_in_research_cycle",
+            "layers": {
+                h: {
+                    name: {
+                        "n": d.get("effective_n"),
+                        "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                        "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                        "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                    }
+                    for name, d in (x.get("variants") or {}).items()
+                }
+                for h, x in (v25_evidence.get("horizons") or {}).items()
+            },
+            "hypotheses": {
+                h: {
+                    name: {
+                        "n": d.get("effective_n"),
+                        "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                        "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                        "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                        "candidate_promotable": (d.get("promotion") or {}).get("candidate_promotable"),
+                    }
+                    for name, d in families.items()
+                }
+                for h, families in (v25_evidence.get("hypotheses") or {}).items()
+            },
+            "gen2_hypotheses": {
+                h: {
+                    name: {
+                        "n": d.get("effective_n"),
+                        "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
+                        "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
+                        "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
+                        "candidate_promotable": (d.get("promotion") or {}).get("candidate_promotable"),
+                    }
+                    for name, d in families.items()
+                }
+                for h, families in (v25_evidence.get("gen2_hypotheses") or {}).items()
+            },
+            "best_validated_hypothesis": v25_evidence.get("best_validated_hypothesis"),
+            "promotion": v25_evidence.get("promotion"),
+        }
+        store.set_runtime("v25_evidence_cycle_priority", {
+            "started_at": compact["started_at"],
+            "finished_at": compact["finished_at"],
+            "priority": compact["priority"],
+        })
+        print("RESEARCH_V25_EVIDENCE", json.dumps(compact, default=str), flush=True)
+    except Exception as exc:
+        err = {"component":"v25_evidence","error":repr(exc),"time":str(pd.Timestamp.now(tz="UTC"))}
+        cycle["errors"].append(err)
+        store.set_runtime("v25_evidence_error", err)
+        print("RESEARCH_V25_EVIDENCE_ERROR", repr(exc), flush=True)
+
+
 def main():
     store = SignalStore()
     cfg = load_cfg()
@@ -100,6 +165,8 @@ def main():
             "v25_evidence": None,
             "errors": [],
         }
+
+        _run_v25_cycle(store, cycle)
 
         if v2 is not None:
             try:
@@ -161,44 +228,6 @@ def main():
             cycle["errors"].append(err)
             store.set_runtime("v22_calibration_error", err)
             print("RESEARCH_V22_CALIBRATION_ERROR", repr(exc), flush=True)
-
-        try:
-            v25_evidence = run_v25_evidence(store)
-            cycle["v25_evidence"] = v25_evidence
-            store.set_runtime("v25_evidence_error", None)
-            compact = {
-                "layers": {
-                    h: {
-                        name: {
-                            "n": d.get("effective_n"),
-                            "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
-                            "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
-                            "lift_vs_base": d.get("validation_spot_lift_vs_base_pct"),
-                        }
-                        for name, d in (x.get("variants") or {}).items()
-                    }
-                    for h, x in (v25_evidence.get("horizons") or {}).items()
-                },
-                "hypotheses": {
-                    h: {
-                        name: {
-                            "n": d.get("effective_n"),
-                            "validation_spot_net": (d.get("validation") or {}).get("avg_spot_net_pct"),
-                            "validation_perp1x_cf": (d.get("validation") or {}).get("avg_perp1x_fee_cf_pct"),
-                        }
-                        for name, d in families.items()
-                    }
-                    for h, families in (v25_evidence.get("hypotheses") or {}).items()
-                },
-                "best_validated_hypothesis": v25_evidence.get("best_validated_hypothesis"),
-                "promotion": v25_evidence.get("promotion"),
-            }
-            print("RESEARCH_V25_EVIDENCE", json.dumps(compact, default=str), flush=True)
-        except Exception as exc:
-            err = {"component":"v25_evidence","error":repr(exc),"time":str(pd.Timestamp.now(tz="UTC"))}
-            cycle["errors"].append(err)
-            store.set_runtime("v25_evidence_error", err)
-            print("RESEARCH_V25_EVIDENCE_ERROR", repr(exc), flush=True)
 
         if v24_labeler is not None:
             try:

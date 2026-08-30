@@ -988,6 +988,16 @@ class SignalStore:
                 continue
 
             base_payload = _loads(row.get("base_payload_json")) or {}
+            if base_payload.get("signal_time"):
+                try:
+                    base_payload = {
+                        **base_payload,
+                        "signal_time": str(datetime.fromisoformat(
+                            str(base_payload["signal_time"]).replace("Z", "+00:00")
+                        )),
+                    }
+                except Exception:
+                    pass
             if base_payload and not base_payload.get("normalized_momentum"):
                 fast = base_payload.get("fast_features") or {}
                 try:

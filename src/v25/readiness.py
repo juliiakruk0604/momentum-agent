@@ -36,7 +36,10 @@ def _trade_metrics(trades):
     losses = [x for x in pnls if x < 0]
     gross_profit = sum(wins)
     gross_loss = abs(sum(losses))
-    profit_factor = None if gross_loss <= 1e-12 else gross_profit / gross_loss
+    # Keep the no-loss convention finite so readiness payloads stay valid JSON.
+    profit_factor = (
+        999.0 if gross_profit > 0 else None
+    ) if gross_loss <= 1e-12 else gross_profit / gross_loss
 
     if n >= 2:
         variance = sum((x - mean) ** 2 for x in pnls) / (n - 1)
@@ -66,6 +69,7 @@ def _trade_metrics(trades):
         "expectancy_usdt": mean,
         "median_pnl_usdt": median,
         "profit_factor": profit_factor,
+        "profit_factor_no_losses": gross_loss <= 1e-12 and gross_profit > 0,
         "win_rate": len(wins) / n,
         "lower_mean_90_usdt": lower90,
         "max_drawdown_pct": max_dd,

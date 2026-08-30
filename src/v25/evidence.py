@@ -283,7 +283,8 @@ def _metrics(rows):
     med_spot = statistics.median(spot)
     wins = sum(x for x in spot if x > 0)
     losses = abs(sum(x for x in spot if x < 0))
-    pf = None if losses <= 1e-12 else wins / losses
+    # Keep the no-loss convention finite so the runtime JSON remains PostgreSQL-safe.
+    pf = (999.0 if wins > 0 else None) if losses <= 1e-12 else wins / losses
 
     lower90 = None
     if n >= 2:
@@ -303,11 +304,102 @@ def _metrics(rows):
         "avg_spot_net_pct":avg_spot,
         "median_spot_net_pct":med_spot,
         "spot_profit_factor":pf,
+        "spot_profit_factor_no_losses": losses <= 1e-12 and wins > 0,
         "spot_lower_mean_90_pct":lower90,
         "spot_max_drawdown_pct":_max_drawdown_pct(spot),
         "avg_perp1x_fee_cf_pct":sum(perp)/n,
         "positive_spot_net_fraction":sum(x>0 for x in spot)/n,
         "positive_perp1x_cf_fraction":sum(x>0 for x in perp)/n,
+        "maker_entry_economics": {
+            "status": "not_evaluated",
+            "promotable": False,
+            "reason": "passive_fill_probability_and_queue_position_not_labeled",
+        },
+    }
+
+
+def _hypothesis_promotion(metrics, lift_vs_base):
+    required_n = int(os.getenv("V25_HYPOTHESIS_MIN_VALIDATION_N", "15"))
+    required_pf = float(os.getenv("V25_HYPOTHESIS_MIN_PROFIT_FACTOR", "1.20"))
+    reasons = []
+    n = int(metrics.get("n") or 0)
+    net = metrics.get("avg_spot_net_pct")
+    lower90 = metrics.get("spot_lower_mean_90_pct")
+    pf = metrics.get("spot_profit_factor")
+
+    if n < required_n:
+        reasons.append("insufficient_validation_n")
+    if net is None or float(net) <= 0.0:
+        reasons.append("spot_net_nonpositive")
+    if lift_vs_base is None or float(lift_vs_base) <= 0.0:
+        reasons.append("no_lift_vs_base")
+    if pf is None or float(pf) < required_pf:
+        reasons.append("profit_factor_low")
+    if lower90 is None or float(lower90) <= 0.0:
+        reasons.append("lower_mean_90_nonpositive")
+
+    return {
+        "candidate_promotable": len(reasons) == 0,
+        "reasons": reasons,
+        "required_validation_n": required_n,
+        "required_profit_factor": required_pf,
+        "requires_positive_spot_net": True,
+        "requires_positive_lift_vs_base": True,
+        "requires_positive_lower_mean_90": True,
+    }
+
+
+def _fixed_context_diagnostics(raw, horizon):
+    """Descriptive fixed-bin diagnostics. They never alter signal thresholds."""
+    independent = _nonoverlap(raw, horizon)
+    _, valid = _split(independent, horizon)
+    deciles = {}
+    vol_buckets = {
+        "lt_0.15": [],
+        "0.15_to_0.30": [],
+        "0.30_to_0.60": [],
+        "0.60_to_1.20": [],
+        "gte_1.20": [],
+    }
+
+
+def _base_validation_metrics(rows, horizon):
+    selected = [r for r in rows if _base_ok(r.get("snapshot") or {})]
+    selected = _nonoverlap(selected, horizon)
+    _, valid = _split(selected, horizon)
+    return _metrics(valid)
+    for row in valid:
+        snapshot = row.get("snapshot") or {}
+        _, ff, cs, _ = _base_parts(snapshot)
+        rank = _f(cs.get("composite_percentile"), -1.0)
+        if 0.0 <= rank <= 1.0:
+            idx = min(9, int(rank * 10.0))
+            deciles.setdefault(str(idx + 1), []).append(row)
+
+        rv = _f(ff.get("realized_vol_20m_pct"), -1.0)
+        if rv < 0.0:
+            continue
+        if rv < 0.15:
+            key = "lt_0.15"
+        elif rv < 0.30:
+            key = "0.15_to_0.30"
+        elif rv < 0.60:
+            key = "0.30_to_0.60"
+        elif rv < 1.20:
+            key = "0.60_to_1.20"
+        else:
+            key = "gte_1.20"
+        vol_buckets[key].append(row)
+
+    return {
+        "research_only": True,
+        "auto_apply": False,
+        "cross_section_composite_deciles": {
+            key: _metrics(deciles.get(key, [])) for key in map(str, range(1, 11))
+        },
+        "realized_vol_20m_fixed_buckets_pct": {
+            key: _metrics(rows) for key, rows in vol_buckets.items()
+        },
     }
 
 
@@ -340,10 +432,16 @@ def _coverage_metrics(rows):
 
 
 def run_v25_evidence(store):
-    boundary_row = store.get_runtime("v25_full_base_context_started")
+    boundary_row = (
+        store.get_runtime("v25_full_base_context_started")
+        if hasattr(store, "get_runtime") else None
+    )
     boundary = None if boundary_row is None else boundary_row.get("value")
     boundary_ms = int((boundary or {}).get("started_ms") or 0)
-    gen2_row = store.get_runtime("v25_slow_state_gen2_started")
+    gen2_row = (
+        store.get_runtime("v25_slow_state_gen2_started")
+        if hasattr(store, "get_runtime") else None
+    )
     gen2_boundary = None if gen2_row is None else gen2_row.get("value")
     gen2_boundary_ms = int((gen2_boundary or {}).get("started_ms") or 0)
     result={
@@ -355,13 +453,23 @@ def run_v25_evidence(store):
         "horizons":{},
         "hypotheses":{},
         "gen2_hypotheses":{},
+        "context_diagnostics":{},
+        "execution_economics": {
+            "taker_labels": "current_best_ask_to_future_best_bid",
+            "maker_model": "disabled_without_queue_and_fill_labels",
+            "maker_results_promotable": False,
+        },
     }
     for horizon in (300,900,1800):
-        raw=store.v24_labeled_snapshots_with_base(
-            horizon,
-            limit=30000,
-            max_base_age_seconds=int(os.getenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "150")),
-        )
+        if hasattr(store, "v24_labeled_snapshots_with_base"):
+            raw=store.v24_labeled_snapshots_with_base(
+                horizon,
+                limit=30000,
+                max_base_age_seconds=int(os.getenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "150")),
+            )
+        else:
+            # Compatibility for isolated stores and older research fixtures.
+            raw=store.v24_labeled_snapshots(horizon, limit=30000)
         post_boundary = [
             r for r in raw
             if boundary_ms <= 0 or int(r.get("snapshot_ms") or 0) >= boundary_ms
@@ -387,6 +495,7 @@ def run_v25_evidence(store):
             v=d["validation"]
             d["validation_spot_lift_vs_base_pct"]=None if v["avg_spot_net_pct"] is None or base_v["avg_spot_net_pct"] is None else v["avg_spot_net_pct"]-base_v["avg_spot_net_pct"]
         result["horizons"][str(horizon)]=h
+        result["context_diagnostics"][str(horizon)] = _fixed_context_diagnostics(raw, horizon)
 
         hyp = {}
         for name, gate in RESEARCH_HYPOTHESES.items():
@@ -403,6 +512,13 @@ def run_v25_evidence(store):
                 "validation": _metrics(valid),
                 "research_only": True,
             }
+            base_v = _base_validation_metrics(source_rows, horizon)
+            valid_spot = hyp[name]["validation"].get("avg_spot_net_pct")
+            base_spot = base_v.get("avg_spot_net_pct")
+            lift = None if valid_spot is None or base_spot is None else valid_spot - base_spot
+            hyp[name]["base_validation_benchmark"] = base_v
+            hyp[name]["validation_spot_lift_vs_base_pct"] = lift
+            hyp[name]["promotion"] = _hypothesis_promotion(hyp[name]["validation"], lift)
         result["hypotheses"][str(horizon)] = hyp
 
         gen2 = {}
@@ -410,6 +526,7 @@ def run_v25_evidence(store):
             r for r in raw
             if gen2_boundary_ms > 0 and int(r.get("snapshot_ms") or 0) >= gen2_boundary_ms
         ]
+        gen2_base_v = _base_validation_metrics(gen2_rows, horizon)
         for name, gate in GEN2_HYPOTHESES.items():
             selected = [r for r in gen2_rows if gate(r.get("snapshot") or {})]
             selected = _nonoverlap(selected, horizon)
@@ -421,6 +538,12 @@ def run_v25_evidence(store):
                 "research_only": True,
                 "hypothesis_generation": 2,
             }
+            valid_spot = gen2[name]["validation"].get("avg_spot_net_pct")
+            base_spot = gen2_base_v.get("avg_spot_net_pct")
+            lift = None if valid_spot is None or base_spot is None else valid_spot - base_spot
+            gen2[name]["base_validation_benchmark"] = gen2_base_v
+            gen2[name]["validation_spot_lift_vs_base_pct"] = lift
+            gen2[name]["promotion"] = _hypothesis_promotion(gen2[name]["validation"], lift)
         result["gen2_hypotheses"][str(horizon)] = gen2
 
     promotion = {
@@ -464,23 +587,33 @@ def run_v25_evidence(store):
     result["promotion"] = promotion
 
     best = None
-    for horizon, families in result["hypotheses"].items():
-        for name, d in families.items():
+    hypothesis_groups = (
+        (1, result["hypotheses"]),
+        (2, result["gen2_hypotheses"]),
+    )
+    for generation, by_horizon in hypothesis_groups:
+        for horizon, families in by_horizon.items():
+          for name, d in families.items():
             valid = d.get("validation") or {}
+            family_promotion = d.get("promotion") or {}
+            if not bool(family_promotion.get("candidate_promotable")):
+                continue
             n = int(valid.get("n") or 0)
             spot = valid.get("avg_spot_net_pct")
             perp = valid.get("avg_perp1x_fee_cf_pct")
-            if n < int(os.getenv("V25_HYPOTHESIS_MIN_VALIDATION_N", "15")):
-                continue
             candidate = {
                 "horizon_seconds": int(horizon),
                 "name": name,
                 "validation_n": n,
                 "spot_net_pct": spot,
                 "perp1x_fee_cf_pct": perp,
+                "spot_lower_mean_90_pct": valid.get("spot_lower_mean_90_pct"),
+                "spot_profit_factor": valid.get("spot_profit_factor"),
+                "spot_lift_vs_base_pct": d.get("validation_spot_lift_vs_base_pct"),
+                "hypothesis_generation": generation,
             }
-            key = float(perp if perp is not None else -999.0)
-            if best is None or key > float(best.get("perp1x_fee_cf_pct") or -999.0):
+            key = float(valid.get("spot_lower_mean_90_pct") or -999.0)
+            if best is None or key > float(best.get("spot_lower_mean_90_pct") or -999.0):
                 best = candidate
     result["best_validated_hypothesis"] = best
     store.set_runtime("v25_evidence",result)

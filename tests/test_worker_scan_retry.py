@@ -49,6 +49,11 @@ def test_run_once_retries_only_failed_market_symbols(monkeypatch):
 
     monkeypatch.setattr(worker, "compute_impulse_candidates", lambda *args, **kwargs: [])
     monkeypatch.setattr(worker, "process_labels", lambda *args, **kwargs: {"labeled": 0, "label_errors": 0})
+    monkeypatch.setattr(worker, "process_v2_scan", lambda *args, **kwargs: {"performed": False})
+    monkeypatch.setattr(worker, "process_v2_shadow", lambda *args, **kwargs: {})
+    monkeypatch.setattr(worker, "process_shadow_portfolio", lambda *args, **kwargs: {})
+    monkeypatch.setattr(worker, "process_micro_live", lambda *args, **kwargs: {"action": "NO_TRADE"})
+    monkeypatch.setattr(worker, "process_promo_scan", lambda *args, **kwargs: {"performed": False})
 
     summary = worker.run_once(provider, store, cfg, universe_limit=2)
 
