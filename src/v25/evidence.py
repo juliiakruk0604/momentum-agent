@@ -170,5 +170,26 @@ def run_v25_evidence(store):
             v=d["validation"]
             d["validation_spot_lift_vs_base_pct"]=None if v["avg_spot_net_pct"] is None or base_v["avg_spot_net_pct"] is None else v["avg_spot_net_pct"]-base_v["avg_spot_net_pct"]
         result["horizons"][str(horizon)]=h
+    promotion = {
+        "candidate_promotable": False,
+        "reasons": [],
+        "required_validation_n": int(os.getenv("V25_PROMOTION_MIN_VALIDATION_N", "20")),
+        "required_horizons": [900, 1800],
+    }
+    for horizon in promotion["required_horizons"]:
+        h = result["horizons"].get(str(horizon)) or {}
+        full = (h.get("variants") or {}).get("full_v25") or {}
+        valid = full.get("validation") or {}
+        n = int(valid.get("n") or 0)
+        net = valid.get("avg_spot_net_pct")
+        lift = full.get("validation_spot_lift_vs_base_pct")
+        if n < promotion["required_validation_n"]:
+            promotion["reasons"].append(f"h{horizon}:insufficient_validation_n")
+        if net is None or float(net) <= 0.0:
+            promotion["reasons"].append(f"h{horizon}:spot_net_nonpositive")
+        if lift is None or float(lift) <= 0.0:
+            promotion["reasons"].append(f"h{horizon}:no_lift_vs_base")
+    promotion["candidate_promotable"] = len(promotion["reasons"]) == 0
+    result["promotion"] = promotion
     store.set_runtime("v25_evidence",result)
     return result
