@@ -2,9 +2,61 @@ import os
 
 import pandas as pd
 
+from research_service import _ensure_v2_provenance
+from src.v2.backtest import V2BacktestRunner, _strategy_config_snapshot, _strategy_fingerprint
 from src.v2.engine import _closed_15m
 from src.v2.risk import cost_adjusted_levels
 from src.v2.shadow import _signal_key
+
+
+class _Store:
+    def __init__(self):
+        self.values = {}
+
+    def get_runtime(self, key):
+        if key not in self.values:
+            return None
+        return {"value": self.values[key]}
+
+    def set_runtime(self, key, value):
+        self.values[key] = value
+
+
+class _Provider:
+    def liquid_spot_usdt_symbols(self, limit, min_turnover):
+        return ["BTCUSDT"]
+
+
+def test_v2_provenance_guard_creates_stable_verified_state(monkeypatch):
+    monkeypatch.setenv("V2_BACKTEST_UNIVERSE", "1")
+    store = _Store()
+    runner = V2BacktestRunner(store, provider=_Provider())
+
+    state = _ensure_v2_provenance(runner)
+
+    assert state["strategy_fingerprint"] == _strategy_fingerprint()
+    assert state["strategy_config"] == _strategy_config_snapshot()
+    dataset_id = state["dataset_id"]
+    runner.ensure_state()
+    assert runner.state()["dataset_id"] == dataset_id
+    assert runner.state()["cursor"] == 0
+
+
+def test_v2_provenance_guard_never_backfills_missing_provenance_in_place(monkeypatch):
+    monkeypatch.setenv("V2_BACKTEST_UNIVERSE", "1")
+    store = _Store()
+    runner = V2BacktestRunner(store, provider=_Provider())
+    old_state = runner._new_state()
+    old_id = old_state["dataset_id"]
+    old_state["cursor"] = 1
+    store.set_runtime(runner.STATE_KEY, old_state)
+
+    state = _ensure_v2_provenance(runner)
+
+    assert f"v2_backtest_superseded:{old_id}" in store.values
+    assert store.values[f"v2_backtest_superseded:{old_id}"]["cursor"] == 1
+    assert state["cursor"] == 0
+    assert state["strategy_fingerprint"] == _strategy_fingerprint()
 
 
 def test_cost_adjusted_rr_meets_gate_without_float_false_negative(monkeypatch):

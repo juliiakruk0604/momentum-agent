@@ -9,8 +9,42 @@ import pandas as pd
 from src.historical_backfill import HistoricalBackfillRunner
 from src.providers.bybit_public import BybitPublicProvider
 from src.store import SignalStore
-from src.v2.backtest import V2BacktestRunner
+from src.v2.backtest import (
+    V2BacktestRunner,
+    _strategy_config_snapshot,
+    _strategy_fingerprint,
+)
 from worker import load_cfg, _prepare_provenance_rebuild
+
+
+def _ensure_v2_provenance(v2: V2BacktestRunner):
+    current_fp = _strategy_fingerprint()
+    current_cfg = _strategy_config_snapshot()
+    state = v2.state()
+
+    if (
+        state
+        and state.get("strategy_fingerprint") == current_fp
+        and state.get("strategy_config") == current_cfg
+    ):
+        return state
+
+    if state:
+        old_id = str(state.get("dataset_id") or "unknown")
+        v2.store.set_runtime(
+            f"v2_backtest_superseded:{old_id}",
+            {
+                **state,
+                "superseded_at": str(pd.Timestamp.now(tz="UTC")),
+                "superseded_reason": "missing_or_changed_strategy_provenance",
+            },
+        )
+
+    state = v2._new_state()
+    state["strategy_fingerprint"] = current_fp
+    state["strategy_config"] = current_cfg
+    v2.store.set_runtime(v2.STATE_KEY, state)
+    return state
 
 
 def main():
@@ -46,7 +80,8 @@ def main():
 
         if v2 is not None:
             try:
-                print("RESEARCH_V2_START", json.dumps({"cursor": (v2.state() or {}).get("cursor")}), flush=True)
+                state = _ensure_v2_provenance(v2)
+                print("RESEARCH_V2_START", json.dumps({"cursor": state.get("cursor")}), flush=True)
                 result = v2.run_batch(v2_batch)
                 cycle["v2"] = result
                 store.set_runtime("v2_backtest_last_batch", result)
