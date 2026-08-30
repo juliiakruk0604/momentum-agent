@@ -637,3 +637,16 @@ def v25_readiness():
         "diagnostics": diagnostics,
         "calibration_available": isinstance(calibration, dict),
     }
+
+
+@app.get("/v25/evidence")
+def v25_evidence():
+    row = store.get_runtime("v25_evidence")
+    err = store.get_runtime("v25_evidence_error")
+    return {
+        "engine":"MomentumAgentV2.5",
+        "evidence":None if row is None else row.get("value"),
+        "last_error":None if err is None else err.get("value"),
+        "auto_apply":False,
+        "live_execution":False,
+    }
