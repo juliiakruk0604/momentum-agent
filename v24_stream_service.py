@@ -99,6 +99,7 @@ async def main_async():
     okx_symbols = okx_available_symbols(symbols)
 
     runtime = V24Runtime(store, symbols)
+    last_feature_archive_ms = 0
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
     linear_stream = BybitLinearContextStream(linear_symbols)
     binance_stream = BinanceTradeStream(binance_symbols)
@@ -221,6 +222,30 @@ async def main_async():
                         "cross_exchange": cross,
                     })
                 ranked = enriched
+
+                nonlocal last_feature_archive_ms
+                archive_interval_ms = int(
+                    max(1.0, float(os.getenv("V24_FEATURE_ARCHIVE_SECONDS", "5"))) * 1000
+                )
+                if now_ms - last_feature_archive_ms >= archive_interval_ms:
+                    regime_for_archive = runtime.current_regime()
+                    for item in ranked:
+                        store.upsert_v24_feature_snapshot({
+                            **item,
+                            "snapshot_ms": now_ms,
+                            "regime": regime_for_archive,
+                        })
+                    last_feature_archive_ms = now_ms
+                    stats = store.v24_feature_snapshot_stats()
+                    store.set_runtime("v24_feature_snapshot_stats", stats)
+
+                    retention_hours = max(
+                        24,
+                        int(os.getenv("V24_FEATURE_RETENTION_HOURS", "168")),
+                    )
+                    prune_before = now_ms - retention_hours * 3600 * 1000
+                    store.prune_v24_feature_snapshots(prune_before)
+
                 store.set_runtime("v24_cross_exchange_top", {
                     "generated_at_ms": now_ms,
                     "top": [
