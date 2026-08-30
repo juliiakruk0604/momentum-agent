@@ -65,3 +65,5 @@ def test_v25_point_in_time_base_join_never_uses_future(tmp_path):
     assert base["score"] == 71.0
     assert base["signal_time"].startswith("2026-08-30 11:00")
     assert rows[0]["snapshot"]["base_momentum_source"] == "v22_point_in_time_join"
+    assert base["normalized_momentum_source"] == "reconstructed_from_point_in_time_fast_features"
+    assert base["normalized_momentum"]["ret_3m_over_rv"] > 0
