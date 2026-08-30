@@ -9,19 +9,45 @@ from urllib.parse import urlencode
 import requests
 
 
-BASE_URL = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 RECV_WINDOW = "5000"
 
 
+def _clean(value: str) -> str:
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value
+
+
 def _credentials() -> tuple[str, str]:
-    api_key = os.getenv("BYBIT_API_KEY", "").strip()
-    api_secret = os.getenv("BYBIT_API_SECRET", "").strip()
+    api_key = _clean(os.getenv("BYBIT_API_KEY", ""))
+    api_secret = _clean(os.getenv("BYBIT_API_SECRET", ""))
     if not api_key or not api_secret:
         raise RuntimeError("BYBIT_API_KEY/BYBIT_API_SECRET are not configured")
     return api_key, api_secret
 
 
-def _signed_get(path: str, params: dict | None = None) -> dict:
+def _candidate_base_urls() -> list[str]:
+    configured = _clean(os.getenv("BYBIT_BASE_URL", ""))
+    urls = [
+        configured,
+        "https://api.bybit.com",
+        "https://api.bybit.tr",
+        "https://api.bybit.eu",
+        "https://api.bybit.nl",
+        "https://api.bybit.kz",
+        "https://api.bybitgeorgia.ge",
+        "https://api.bybit.ae",
+        "https://api.bybit.id",
+    ]
+    out = []
+    for url in urls:
+        if url and url not in out:
+            out.append(url)
+    return out
+
+
+def _signed_get(base_url: str, path: str, params: dict | None = None) -> dict:
     api_key, api_secret = _credentials()
     params = params or {}
     query = urlencode(sorted((k, str(v)) for k, v in params.items() if v is not None))
@@ -40,20 +66,35 @@ def _signed_get(path: str, params: dict | None = None) -> dict:
         "X-BAPI-SIGN": signature,
     }
 
-    url = f"{BASE_URL}{path}"
-    response = requests.get(url, params=params, headers=headers, timeout=10)
+    response = requests.get(
+        f"{base_url}{path}",
+        params=params,
+        headers=headers,
+        timeout=8,
+    )
     response.raise_for_status()
     data = response.json()
-
     if int(data.get("retCode", -1)) != 0:
         raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
-
     return data
 
 
+def _find_authenticated_base_url() -> tuple[str, dict, list[dict]]:
+    errors = []
+    for base_url in _candidate_base_urls():
+        try:
+            result = _signed_get(base_url, "/v5/user/query-api").get("result") or {}
+            return base_url, result, errors
+        except Exception as exc:
+            errors.append({"base_url": base_url, "error": str(exc)[:240]})
+    raise RuntimeError(f"No Bybit API domain authenticated. attempts={errors}")
+
+
 def account_diagnostic() -> dict:
-    api_info = _signed_get("/v5/user/query-api").get("result") or {}
+    base_url, api_info, domain_attempts = _find_authenticated_base_url()
+
     wallet = _signed_get(
+        base_url,
         "/v5/account/wallet-balance",
         {"accountType": "UNIFIED"},
     ).get("result") or {}
@@ -86,6 +127,7 @@ def account_diagnostic() -> dict:
 
     return {
         "connected": True,
+        "base_url": base_url,
         "safe_permissions": safe_permissions,
         "read_only": int(api_info.get("readOnly", 0)) == 1,
         "spot_trade_enabled": "SpotTrade" in spot_permissions,
@@ -95,5 +137,6 @@ def account_diagnostic() -> dict:
         "total_equity_usd": account.get("totalEquity"),
         "total_available_balance_usd": account.get("totalAvailableBalance"),
         "coins": coins,
+        "domain_attempts_before_success": domain_attempts,
         "execution_enabled": False,
     }
