@@ -23,6 +23,7 @@ def _new_state():
     start = float(os.getenv("V2_SHADOW_START_EQUITY_USDT", "15"))
     return {
         "version": 2,
+        "strategy_version": os.getenv("V2_STRATEGY_VERSION", "2.1"),
         "started_at": str(_now()),
         "starting_equity_usdt": start,
         "cash_usdt": start,
@@ -246,12 +247,13 @@ def _maybe_open(provider, store, state):
         return
 
     qty = notional / entry_price
-    stop_pct = float(candidate["stop_pct"])
-    target_pct = float(candidate["target_pct"])
+    stop_pct = float(risk.get("stop_pct") or candidate["stop_pct"])
+    target_pct = float(risk.get("target_pct") or candidate["target_pct"])
     state["cash_usdt"] = float(state["cash_usdt"]) - total_cost
     state["fees_usdt"] = float(state.get("fees_usdt") or 0.0) + entry_fee
     state["open_position"] = {
         "signal_key": key,
+        "strategy_version": os.getenv("V2_STRATEGY_VERSION", "2.1"),
         "symbol": candidate["symbol"],
         "setup": candidate["setup"],
         "score": float(candidate["score"]),
