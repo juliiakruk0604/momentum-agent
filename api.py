@@ -364,7 +364,7 @@ def startup_promo_snapshot():
         print("PROMO_STARTUP_ERROR", repr(exc), flush=True)
 
     try:
-        funding = funding_balances()
+        funding = funding_balances(("USDT", "USDC", "USD1", "MNT", "ETH", "BTC", "SOL", "XRP", "DOGE", "BNB"))
         store.set_runtime("promo_account_snapshot", {
             "funding": funding,
             "execution_enabled": False,
