@@ -78,8 +78,12 @@ def evaluate_v2_readiness(store):
 
     shadow_trades = 0
     shadow_expectancy = 0.0
+    current_version = os.getenv("V2_STRATEGY_VERSION", "2.1")
     if isinstance(shadow, dict):
-        trades = shadow.get("trades") or []
+        trades = [
+            t for t in (shadow.get("trades") or [])
+            if str(t.get("strategy_version") or "legacy") == current_version
+        ]
         shadow_trades = len(trades)
         if trades:
             shadow_expectancy = sum(float(t.get("pnl_usdt") or 0.0) for t in trades) / len(trades)
@@ -127,6 +131,7 @@ def evaluate_v2_readiness(store):
             "sensitivity_thresholds_evaluated": evaluated,
         },
         "forward_shadow": {
+            "strategy_version": current_version,
             "closed_trades": shadow_trades,
             "expectancy_usdt": shadow_expectancy,
         },
