@@ -72,6 +72,8 @@ def evaluate_v22_readiness(store):
             reasons.append("insufficient_runner_replay_trades")
         runner_m = replay.get("runner_metrics") or {}
         fixed_m = replay.get("fixed_metrics") or {}
+        stable_runner_variants = 0
+        evaluated_runner_variants = 0
         if matched >= 5:
             if float(runner_m.get("expectancy_usdt") or 0.0) <= 0:
                 reasons.append("runner_expectancy_nonpositive")
@@ -81,6 +83,24 @@ def evaluate_v22_readiness(store):
             fixed_dd = float(fixed_m.get("max_drawdown_pct") or 0.0)
             if runner_dd < min(-15.0, fixed_dd * 1.5):
                 warnings.append("runner_drawdown_materially_worse")
+
+            variants = replay.get("variant_metrics") or {}
+            for _, vm in variants.items():
+                if int(vm.get("n") or 0) < 5:
+                    continue
+                evaluated_runner_variants += 1
+                pf = vm.get("profit_factor")
+                if (
+                    float(vm.get("expectancy_usdt") or 0.0) > 0
+                    and float(vm.get("delta_vs_fixed_total_usdt") or 0.0) > 0
+                    and pf is not None
+                    and float(pf) > 1.0
+                ):
+                    stable_runner_variants += 1
+            if evaluated_runner_variants < 3:
+                reasons.append("insufficient_runner_parameter_sensitivity")
+            elif stable_runner_variants < 3:
+                reasons.append("runner_edge_not_stable_across_parameters")
 
     snapshots = 0 if not isinstance(flow_stats, dict) else int(flow_stats.get("snapshots") or 0)
     if snapshots < int(os.getenv("V22_GATE_MIN_FLOW_SNAPSHOTS", "500")):
@@ -112,6 +132,10 @@ def evaluate_v22_readiness(store):
             "closed_trades": len(trades),
         },
         "runner_replay": replay,
+        "runner_parameter_stability": {
+            "evaluated": locals().get("evaluated_runner_variants", 0),
+            "stable_positive": locals().get("stable_runner_variants", 0),
+        },
         "orderflow_archive": flow_stats,
         "market_age_seconds": market_age,
         "last_fast_scan": None if not isinstance(fast, dict) else fast.get("generated_at"),
