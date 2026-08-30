@@ -95,6 +95,50 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
     ret3_pct = _percentile_map(all_fast, lambda x: x.ret_3m_pct)
     volacc_pct = _percentile_map(all_fast, lambda x: x.volume_acceleration)
     score_pct = _percentile_map(all_fast, lambda x: x.coarse_score)
+
+    fast_universe = []
+    for f in all_fast:
+        fast_universe.append({
+            "symbol": f.symbol,
+            "setup": "FAST_MOMENTUM_CONTEXT",
+            "strategy_version": "2.5-base",
+            "signal_time": f.signal_time,
+            "signal_price": f.price,
+            "score": round(float(f.coarse_score), 6),
+            "score_kind": "coarse_fast_only",
+            "regime": regime.name,
+            "fast_features": f.to_dict(),
+            "normalized_momentum": {
+                "ret_3m_over_rv": round(
+                    float(f.ret_3m_pct) / max(float(f.realized_vol_20m_pct) * (3.0 ** 0.5), 0.03),
+                    6,
+                ),
+                "ret_5m_over_rv": round(
+                    float(f.ret_5m_pct) / max(float(f.realized_vol_20m_pct) * (5.0 ** 0.5), 0.03),
+                    6,
+                ),
+                "rs_5m_over_rv": round(
+                    float(f.rs_5m_pct) / max(float(f.realized_vol_20m_pct) * (5.0 ** 0.5), 0.03),
+                    6,
+                ),
+            },
+            "cross_section": {
+                "rs_5m_percentile": round(float(rs_pct.get(f.symbol, 0.0)), 6),
+                "ret_3m_percentile": round(float(ret3_pct.get(f.symbol, 0.0)), 6),
+                "volume_accel_percentile": round(float(volacc_pct.get(f.symbol, 0.0)), 6),
+                "coarse_score_percentile": round(float(score_pct.get(f.symbol, 0.0)), 6),
+                "composite_percentile": round(
+                    0.40 * float(rs_pct.get(f.symbol, 0.0))
+                    + 0.30 * float(ret3_pct.get(f.symbol, 0.0))
+                    + 0.20 * float(volacc_pct.get(f.symbol, 0.0))
+                    + 0.10 * float(score_pct.get(f.symbol, 0.0)),
+                    6,
+                ),
+            },
+            "action": "FAST_CONTEXT_ONLY",
+            "live_execution": False,
+        })
+
     enriched = []
     previous_by_symbol = {
         x.get("symbol"): x
@@ -245,6 +289,8 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
         "coarse_candidates": coarse_count,
         "micro_sampled": min(len(all_fast), int(os.getenv("V22_MICRO_TOP_N", "8"))),
         "candidate_count": len(enriched),
+        "fast_universe_count": len(fast_universe),
+        "fast_universe": fast_universe,
         "candidates": enriched[:8],
         "errors": errors[:20],
         "live_execution": False,
