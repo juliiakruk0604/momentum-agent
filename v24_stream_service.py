@@ -8,15 +8,32 @@ import time
 from src.store import SignalStore
 from src.v2.provider import BybitV2Provider
 from src.v24.bybit_ws import BybitSpotStream
+from src.v24.challenger import V24EventShadow
 
 
 class V24Runtime:
     def __init__(self, store, symbols):
         self.store = store
         self.symbols = symbols
+        self.shadow = V24EventShadow(store)
         self.latest = {}
         self.last_runtime_write = 0.0
         self.last_archive_write = 0.0
+
+    def current_regime(self):
+        fast = self.store.get_runtime("v22_fast_scan")
+        value = None if fast is None else fast.get("value")
+        if isinstance(value, dict):
+            regime = (value.get("regime") or {}).get("name")
+            if regime:
+                return str(regime)
+        slow = self.store.get_runtime("v2_scan")
+        value = None if slow is None else slow.get("value")
+        if isinstance(value, dict):
+            regime = (value.get("regime") or {}).get("name")
+            if regime:
+                return str(regime)
+        return "UNKNOWN"
 
     def on_features(self, symbol, feature):
         self.latest[symbol] = feature
@@ -83,7 +100,29 @@ async def main_async():
             print("V24_STREAM_STATUS", json.dumps(status, default=str), flush=True)
             await asyncio.sleep(max(10, int(os.getenv("V24_STATUS_SECONDS", "30"))))
 
-    await asyncio.gather(stream.run_forever(), status_loop())
+    async def decision_loop():
+        last_print = None
+        while True:
+            ranked = sorted(
+                runtime.latest.values(),
+                key=lambda x: float(x.get("microstructure_score") or 0.0),
+                reverse=True,
+            )
+            if ranked:
+                summary = runtime.shadow.process(ranked, runtime.current_regime())
+                store.set_runtime("v24_event_shadow_summary", summary)
+                fingerprint = json.dumps({
+                    "armed": summary.get("armed"),
+                    "open": None if not summary.get("open_position") else summary["open_position"].get("symbol"),
+                    "last_action": summary.get("last_action"),
+                    "equity": summary.get("current_equity_usdt"),
+                }, sort_keys=True, default=str)
+                if fingerprint != last_print:
+                    print("V24_SHADOW_STATE", json.dumps(summary, default=str), flush=True)
+                    last_print = fingerprint
+            await asyncio.sleep(max(0.5, float(os.getenv("V24_DECISION_INTERVAL_SECONDS", "1.0"))))
+
+    await asyncio.gather(stream.run_forever(), status_loop(), decision_loop())
 
 
 def main():
