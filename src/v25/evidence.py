@@ -293,7 +293,7 @@ def _metrics(rows):
 def run_v25_evidence(store):
     result={"engine":"MomentumAgentV2.5","mode":"LAYER_ABLATION_PURGED","auto_apply":False,"horizons":{},"hypotheses":{}}
     for horizon in (300,900,1800):
-        raw=store.v24_labeled_snapshots(horizon, limit=30000)
+        raw=store.v24_labeled_snapshots_with_base(\n            horizon,\n            limit=30000,\n            max_base_age_seconds=int(os.getenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "150")),\n        )
         h={"raw_n":len(raw),"variants":{}}
         for name,gate in VARIANTS.items():
             selected=[r for r in raw if gate(r.get("snapshot") or {})]
