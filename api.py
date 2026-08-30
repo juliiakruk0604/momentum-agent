@@ -565,7 +565,13 @@ def v24_feature_stats():
     return {
         "engine": "MomentumAgentV2.4",
         "snapshots": store.v24_feature_snapshot_stats(),
+        "price_ticks": store.v24_price_tick_stats(),
         "labels": store.v24_feature_label_stats(),
+        "label_version": (
+            None
+            if store.get_runtime("v24_label_version") is None
+            else store.get_runtime("v24_label_version").get("value")
+        ),
         "labeler_error": (
             None
             if store.get_runtime("v24_feature_labeler_error") is None
