@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS v24_feature_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_v24_feature_symbol_ms ON v24_feature_snapshots(symbol,snapshot_ms);
 CREATE INDEX IF NOT EXISTS idx_v24_feature_ms ON v24_feature_snapshots(snapshot_ms);
+CREATE TABLE IF NOT EXISTS v24_price_ticks(
+  snapshot_ms INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  best_bid REAL NOT NULL,
+  best_ask REAL NOT NULL,
+  mid REAL NOT NULL,
+  PRIMARY KEY(symbol,snapshot_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_price_symbol_ms ON v24_price_ticks(symbol,snapshot_ms);
+CREATE INDEX IF NOT EXISTS idx_v24_price_ms ON v24_price_ticks(snapshot_ms);
 CREATE TABLE IF NOT EXISTS v24_feature_labels(
   symbol TEXT NOT NULL,
   snapshot_ms INTEGER NOT NULL,
@@ -254,6 +264,16 @@ CREATE TABLE IF NOT EXISTS v24_feature_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_v24_feature_symbol_ms ON v24_feature_snapshots(symbol,snapshot_ms);
 CREATE INDEX IF NOT EXISTS idx_v24_feature_ms ON v24_feature_snapshots(snapshot_ms);
+CREATE TABLE IF NOT EXISTS v24_price_ticks(
+  snapshot_ms BIGINT NOT NULL,
+  symbol TEXT NOT NULL,
+  best_bid DOUBLE PRECISION NOT NULL,
+  best_ask DOUBLE PRECISION NOT NULL,
+  mid DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY(symbol,snapshot_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_price_symbol_ms ON v24_price_ticks(symbol,snapshot_ms);
+CREATE INDEX IF NOT EXISTS idx_v24_price_ms ON v24_price_ticks(snapshot_ms);
 CREATE TABLE IF NOT EXISTS v24_feature_labels(
   symbol TEXT NOT NULL,
   snapshot_ms BIGINT NOT NULL,
@@ -687,22 +707,91 @@ class SignalStore:
             "latest_snapshot_ms": None if not latest else latest.get("ms"),
         }
 
-    def v24_label_candidates(self, horizon_seconds: int, limit: int = 100):
-        cutoff_ms = int(_utc_now().timestamp() * 1000) - int(horizon_seconds) * 1000 - 5000
+    def insert_v24_price_ticks_batch(self, snapshot_ms: int, features: list[dict]):
+        rows = []
+        for feature in features or []:
+            symbol = str(feature.get("symbol") or "")
+            bid = float(feature.get("best_bid") or 0.0)
+            ask = float(feature.get("best_ask") or 0.0)
+            mid = float(feature.get("mid") or 0.0)
+            if not symbol or bid <= 0 or ask <= 0 or mid <= 0:
+                continue
+            rows.append((int(snapshot_ms), symbol, bid, ask, mid))
+        if not rows:
+            return 0
+
+        sql_sqlite = '''INSERT INTO v24_price_ticks(snapshot_ms,symbol,best_bid,best_ask,mid)
+                        VALUES(?,?,?,?,?)
+                        ON CONFLICT(symbol,snapshot_ms) DO UPDATE SET
+                          best_bid=excluded.best_bid,best_ask=excluded.best_ask,mid=excluded.mid'''
+        sql_pg = '''INSERT INTO v24_price_ticks(snapshot_ms,symbol,best_bid,best_ask,mid)
+                    VALUES(%s,%s,%s,%s,%s)
+                    ON CONFLICT(symbol,snapshot_ms) DO UPDATE SET
+                      best_bid=EXCLUDED.best_bid,best_ask=EXCLUDED.best_ask,mid=EXCLUDED.mid'''
+        with self._conn() as conn:
+            cur = conn.cursor()
+            cur.executemany(sql_pg if self.backend == "postgres" else sql_sqlite, rows)
+            if self.backend == "postgres":
+                conn.commit()
+        return len(rows)
+
+    def v24_price_path(self, symbol: str, start_ms: int, end_ms: int):
+        return self._execute(
+            '''SELECT snapshot_ms,best_bid,best_ask,mid FROM v24_price_ticks
+               WHERE symbol=? AND snapshot_ms>? AND snapshot_ms<=?
+               ORDER BY snapshot_ms ASC''',
+            '''SELECT snapshot_ms,best_bid,best_ask,mid FROM v24_price_ticks
+               WHERE symbol=%s AND snapshot_ms>%s AND snapshot_ms<=%s
+               ORDER BY snapshot_ms ASC''',
+            (str(symbol), int(start_ms), int(end_ms)),
+            fetch="all",
+        )
+
+    def v24_price_tick_stats(self):
+        total = self._execute(
+            "SELECT COUNT(*) AS n FROM v24_price_ticks",
+            "SELECT COUNT(*) AS n FROM v24_price_ticks",
+            fetch="one",
+        )
+        latest = self._execute(
+            "SELECT MAX(snapshot_ms) AS ms FROM v24_price_ticks",
+            "SELECT MAX(snapshot_ms) AS ms FROM v24_price_ticks",
+            fetch="one",
+        )
+        return {
+            "ticks": int((total or {}).get("n") or 0),
+            "latest_snapshot_ms": None if not latest else latest.get("ms"),
+        }
+
+    def prune_v24_price_ticks(self, older_than_ms: int):
+        self._execute(
+            "DELETE FROM v24_price_ticks WHERE snapshot_ms<?",
+            "DELETE FROM v24_price_ticks WHERE snapshot_ms<%s",
+            (int(older_than_ms),),
+        )
+
+    def clear_v24_feature_labels(self):
+        self._execute(
+            "DELETE FROM v24_feature_labels",
+            "DELETE FROM v24_feature_labels",
+        )
+
+    def v24_label_candidates(self, horizon_seconds: int, limit: int = 100, min_snapshot_ms: int = 0):
+        cutoff_ms = int(_utc_now().timestamp() * 1000) - int(horizon_seconds) * 1000 - 2000
         return self._execute(
             '''SELECT s.* FROM v24_feature_snapshots s
                LEFT JOIN v24_feature_labels l
                  ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
                 AND l.horizon_seconds=?
-               WHERE s.snapshot_ms<=? AND l.symbol IS NULL
+               WHERE s.snapshot_ms>=? AND s.snapshot_ms<=? AND l.symbol IS NULL
                ORDER BY s.snapshot_ms ASC LIMIT ?''',
             '''SELECT s.* FROM v24_feature_snapshots s
                LEFT JOIN v24_feature_labels l
                  ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
                 AND l.horizon_seconds=%s
-               WHERE s.snapshot_ms<=%s AND l.symbol IS NULL
+               WHERE s.snapshot_ms>=%s AND s.snapshot_ms<=%s AND l.symbol IS NULL
                ORDER BY s.snapshot_ms ASC LIMIT %s''',
-            (int(horizon_seconds), cutoff_ms, int(limit)),
+            (int(horizon_seconds), int(min_snapshot_ms), cutoff_ms, int(limit)),
             fetch="all",
         )
 
