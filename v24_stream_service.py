@@ -13,6 +13,18 @@ from src.v24.linear_ws import BybitLinearContextStream
 from src.v24.binance_ws import BinanceTradeStream, available_symbols as binance_available_symbols
 from src.v24.okx_ws import OKXTradeStream, available_symbols as okx_available_symbols
 from src.v24.sequence import SequenceFeatureEngine
+from src.v25.hybrid import V25HybridShadow
+
+
+def _latest_v22_map(store):
+    row = store.get_runtime("v22_fast_scan")
+    value = None if row is None else row.get("value")
+    candidates = [] if not isinstance(value, dict) else (value.get("candidates") or [])
+    return {
+        str(x.get("symbol")): x
+        for x in candidates
+        if x.get("symbol")
+    }
 
 
 class V24Runtime:
@@ -101,6 +113,7 @@ async def main_async():
 
     runtime = V24Runtime(store, symbols)
     sequence_engine = SequenceFeatureEngine()
+    hybrid_shadow = V25HybridShadow(store)
     last_feature_archive_ms = 0
     last_price_tick_ms = 0
     last_price_prune_ms = 0
@@ -192,6 +205,7 @@ async def main_async():
             if ranked:
                 now_ms = int(time.time() * 1000)
                 enriched = []
+                base_map = _latest_v22_map(store)
                 for feature in ranked:
                     symbol = feature.get("symbol")
                     context = linear_stream.context(symbol, now_ms)
@@ -224,6 +238,7 @@ async def main_async():
                         **feature,
                         "perp_context": context,
                         "cross_exchange": cross,
+                        "base_momentum": base_map.get(str(symbol)),
                     }
                     enriched.append(sequence_engine.enrich(enriched_item, now_ms))
                 ranked = enriched
@@ -306,6 +321,20 @@ async def main_async():
                     regime = "DATA_DEGRADED"
                 summary = runtime.shadow.process(ranked, regime)
                 store.set_runtime("v24_event_shadow_summary", summary)
+
+                hybrid = hybrid_shadow.process(ranked, regime)
+                store.set_runtime("v25_hybrid_shadow_summary", hybrid)
+                hybrid_fp = json.dumps({
+                    "armed": hybrid.get("armed"),
+                    "open": None if not hybrid.get("open_position") else hybrid["open_position"].get("symbol"),
+                    "last_action": hybrid.get("last_action"),
+                    "equity": hybrid.get("current_equity_usdt"),
+                }, sort_keys=True, default=str)
+                prev_hybrid = store.get_runtime("v25_hybrid_last_print")
+                prev_hybrid_fp = None if prev_hybrid is None else prev_hybrid.get("value")
+                if hybrid_fp != prev_hybrid_fp:
+                    print("V25_HYBRID_STATE", json.dumps(hybrid, default=str), flush=True)
+                    store.set_runtime("v25_hybrid_last_print", hybrid_fp)
                 fingerprint = json.dumps({
                     "armed": summary.get("armed"),
                     "open": None if not summary.get("open_position") else summary["open_position"].get("symbol"),
