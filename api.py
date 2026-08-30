@@ -579,3 +579,18 @@ def v24_feature_stats():
         ),
         "live_execution": False,
     }
+
+
+@app.get("/v24/calibration")
+def v24_calibration():
+    row = store.get_runtime("v24_empirical_calibration")
+    return {
+        "engine": "MomentumAgentV2.4",
+        "calibration": None if row is None else row.get("value"),
+        "error": (
+            None
+            if store.get_runtime("v24_calibration_error") is None
+            else store.get_runtime("v24_calibration_error").get("value")
+        ),
+        "live_execution": False,
+    }
