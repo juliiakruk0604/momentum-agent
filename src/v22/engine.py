@@ -11,6 +11,25 @@ from .fast_features import compute_fast_features
 from .orderflow import flow_score
 
 
+def _percentile_map(items, getter):
+    pairs = []
+    for item in items:
+        try:
+            pairs.append((item.symbol, float(getter(item))))
+        except Exception:
+            continue
+    if not pairs:
+        return {}
+    ordered = sorted(pairs, key=lambda x: x[1])
+    n = len(ordered)
+    if n == 1:
+        return {ordered[0][0]: 1.0}
+    return {
+        symbol: rank / float(n - 1)
+        for rank, (symbol, _) in enumerate(ordered)
+    }
+
+
 def _closed_1m(frame, now=None):
     now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
     if now.tzinfo is None:
@@ -71,6 +90,11 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
 
     all_fast.sort(key=lambda x: x.coarse_score, reverse=True)
     coarse_count = sum(1 for x in all_fast if x.coarse_score >= coarse_gate)
+
+    rs_pct = _percentile_map(all_fast, lambda x: x.rs_5m_pct)
+    ret3_pct = _percentile_map(all_fast, lambda x: x.ret_3m_pct)
+    volacc_pct = _percentile_map(all_fast, lambda x: x.volume_acceleration)
+    score_pct = _percentile_map(all_fast, lambda x: x.coarse_score)
     enriched = []
     previous_by_symbol = {
         x.get("symbol"): x
@@ -165,6 +189,19 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
             "regime": regime.name,
             "fast_features": f.to_dict(),
             "flow_score": flow,
+            "cross_section": {
+                "rs_5m_percentile": round(float(rs_pct.get(f.symbol, 0.0)), 6),
+                "ret_3m_percentile": round(float(ret3_pct.get(f.symbol, 0.0)), 6),
+                "volume_accel_percentile": round(float(volacc_pct.get(f.symbol, 0.0)), 6),
+                "coarse_score_percentile": round(float(score_pct.get(f.symbol, 0.0)), 6),
+                "composite_percentile": round(
+                    0.40 * float(rs_pct.get(f.symbol, 0.0))
+                    + 0.30 * float(ret3_pct.get(f.symbol, 0.0))
+                    + 0.20 * float(volacc_pct.get(f.symbol, 0.0))
+                    + 0.10 * float(score_pct.get(f.symbol, 0.0)),
+                    6,
+                ),
+            },
             "flow_acceleration": {
                 "flow_score_delta": round(flow_score_delta, 6),
                 "buy_ratio_delta": round(buy_ratio_delta, 6),
