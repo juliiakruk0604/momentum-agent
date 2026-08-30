@@ -21,6 +21,8 @@ from src.promo_scanner import scan_promos
 from src.bybit_account import account_diagnostic, funding_balances
 from src.execution.bybit_spot import build_spot_plan, place_spot_plan
 from src.shadow_portfolio import process_shadow_portfolio
+from src.v2.engine import scan_v2
+from src.v2.shadow import process_v2_shadow
 from src.store import SignalStore
 
 
@@ -153,6 +155,43 @@ def process_promo_scan(store, now):
         "bucket": bucket,
         "scanned": result.get("scanned"),
         "top_count": len(top),
+    }
+
+
+
+def _v2_bucket(now):
+    return pd.Timestamp(now).floor("15min").isoformat()
+
+
+def process_v2_scan(store, now):
+    bucket = _v2_bucket(now)
+    last = store.get_runtime("v2_scan_bucket")
+    if last is not None and last.get("value") == bucket:
+        existing = store.get_runtime("v2_scan")
+        value = None if existing is None else existing.get("value")
+        return {
+            "performed": False,
+            "bucket": bucket,
+            "candidate_count": None if not isinstance(value, dict) else value.get("candidate_count"),
+        }
+
+    result = scan_v2(universe_limit=int(os.getenv("V2_UNIVERSE_LIMIT", "40")))
+    store.set_runtime("v2_scan", result)
+    store.set_runtime("v2_scan_bucket", bucket)
+    print("V2_SCAN", json.dumps({
+        "bucket": bucket,
+        "regime": result.get("regime"),
+        "symbols_scanned": result.get("symbols_scanned"),
+        "candidate_count": result.get("candidate_count"),
+        "top": (result.get("candidates") or [])[:3],
+        "mode": result.get("mode"),
+    }, default=str), flush=True)
+    return {
+        "performed": True,
+        "bucket": bucket,
+        "candidate_count": result.get("candidate_count"),
+        "symbols_scanned": result.get("symbols_scanned"),
+        "regime": (result.get("regime") or {}).get("name"),
     }
 
 
@@ -340,6 +379,16 @@ def run_once(provider, store, cfg, universe_limit=100):
 
     label_stats = process_labels(provider, store, cfg, now)
     try:
+        v2_scan_stats = process_v2_scan(store, now)
+    except Exception as exc:
+        v2_scan_stats = {"performed": False, "error": repr(exc)}
+        print("v2_scan_error", repr(exc), flush=True)
+    try:
+        v2_shadow_stats = process_v2_shadow(store)
+    except Exception as exc:
+        v2_shadow_stats = {"mode": "V2_LIVE_SHADOW_1M_PATH", "error": repr(exc)}
+        print("v2_shadow_error", repr(exc), flush=True)
+    try:
         shadow_stats = process_shadow_portfolio(store)
     except Exception as exc:
         shadow_stats = {"mode": "LIVE_SHADOW_REAL_MARKET", "error": repr(exc)}
@@ -369,6 +418,8 @@ def run_once(provider, store, cfg, universe_limit=100):
         "promo_scan": promo_stats,
         "micro_live": micro_live_stats,
         "shadow_portfolio": shadow_stats,
+        "v2_scan": v2_scan_stats,
+        "v2_shadow": v2_shadow_stats,
     }
     store.set_runtime("worker_heartbeat", summary)
     today = pd.Timestamp.now(tz="UTC").date().isoformat()
