@@ -11,6 +11,7 @@ from src.providers.bybit_public import BybitPublicProvider
 from src.store import SignalStore
 from src.v22.replay import V22RunnerReplay
 from src.v22.labels import V22FlowLabeler
+from src.v22.calibration import run_calibration
 from src.v2.backtest import (
     V2BacktestRunner,
     _strategy_config_snapshot,
@@ -87,6 +88,7 @@ def main():
             "v2": None,
             "v22": None,
             "v22_labels": None,
+            "v22_calibration": None,
             "errors": [],
         }
 
@@ -130,6 +132,26 @@ def main():
                 cycle["errors"].append(err)
                 store.set_runtime("v22_flow_labeler_error", err)
                 print("RESEARCH_V22_LABELS_ERROR", repr(exc), flush=True)
+
+        try:
+            calibration = run_calibration(store)
+            cycle["v22_calibration"] = calibration
+            store.set_runtime("v22_calibration_error", None)
+            compact = {
+                h: {
+                    "status": x.get("status"),
+                    "n": x.get("n"),
+                    "robust_rule_count": x.get("robust_rule_count"),
+                    "recommended": (x.get("recommended_single_feature_rules") or [])[:3],
+                }
+                for h, x in (calibration.get("horizons") or {}).items()
+            }
+            print("RESEARCH_V22_CALIBRATION", json.dumps(compact, default=str), flush=True)
+        except Exception as exc:
+            err = {"component": "v22_calibration", "error": repr(exc), "time": str(pd.Timestamp.now(tz="UTC"))}
+            cycle["errors"].append(err)
+            store.set_runtime("v22_calibration_error", err)
+            print("RESEARCH_V22_CALIBRATION_ERROR", repr(exc), flush=True)
 
         if v1 is not None:
             try:
