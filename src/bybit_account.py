@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import time
 from urllib.parse import urlencode
@@ -10,6 +11,16 @@ import requests
 
 
 RECV_WINDOW = "5000"
+
+
+def _safe_error(exc: Exception) -> str:
+    text = str(exc)
+    api_key = _clean(os.getenv("BYBIT_API_KEY", "")) if "_clean" in globals() else ""
+    if api_key:
+        text = text.replace(api_key, "[API_KEY_REDACTED]")
+    if "origin_string[" in text:
+        text = text.split("origin_string[", 1)[0].rstrip(" :") + ": origin_string_redacted"
+    return text[:300]
 
 
 def _clean(value: str) -> str:
@@ -78,6 +89,39 @@ def _signed_get(base_url: str, path: str, params: dict | None = None) -> dict:
         raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
     return data
 
+
+
+def _signed_post(base_url: str, path: str, payload: dict | None = None) -> dict:
+    api_key, api_secret = _credentials()
+    payload = payload or {}
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    timestamp = str(int(time.time() * 1000))
+    sign_payload = f"{timestamp}{api_key}{RECV_WINDOW}{body}"
+    signature = hmac.new(
+        api_secret.encode("utf-8"),
+        sign_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    headers = {
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        "X-BAPI-SIGN": signature,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(
+        f"{base_url}{path}",
+        data=body.encode("utf-8"),
+        headers=headers,
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if int(data.get("retCode", -1)) != 0:
+        raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
+    return data
 
 def _find_authenticated_base_url() -> tuple[str, dict, list[dict]]:
     errors = []
