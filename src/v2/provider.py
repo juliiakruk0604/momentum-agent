@@ -154,3 +154,20 @@ class BybitV2Provider:
             return None if not rows else float(rows[0]["fundingRate"])
         except Exception:
             return None
+
+
+    def recent_trades(self, symbol, limit=200, category="spot"):
+        result = self._get("/v5/market/recent-trade", {
+            "category": category,
+            "symbol": symbol,
+            "limit": int(limit),
+        })
+        rows = []
+        for t in result.get("list") or []:
+            rows.append({
+                "time": int(t.get("time") or 0),
+                "price": float(t.get("price") or 0.0),
+                "size": float(t.get("size") or 0.0),
+                "side": str(t.get("side") or ""),
+            })
+        return rows
