@@ -9,6 +9,7 @@ from src.store import SignalStore
 from src.v2.provider import BybitV2Provider
 from src.v24.bybit_ws import BybitSpotStream
 from src.v24.challenger import V24EventShadow
+from src.v24.linear_ws import BybitLinearContextStream
 
 
 class V24Runtime:
@@ -84,11 +85,21 @@ async def main_async():
     if not symbols:
         raise RuntimeError("v24_universe_empty")
 
+    linear_instruments = provider.instruments("linear")
+    linear_set = {
+        x.get("symbol")
+        for x in linear_instruments
+        if x.get("status") == "Trading" and x.get("quoteCoin") == "USDT"
+    }
+    linear_symbols = [s for s in symbols if s in linear_set]
+
     runtime = V24Runtime(store, symbols)
     stream = BybitSpotStream(symbols, on_features=runtime.on_features)
+    linear_stream = BybitLinearContextStream(linear_symbols)
 
     print("V24_STREAM_START", json.dumps({
         "symbols": symbols,
+        "linear_symbols": linear_symbols,
         "live_execution": False,
     }), flush=True)
 
@@ -96,6 +107,7 @@ async def main_async():
         while True:
             status = stream.status()
             status["generated_at_ms"] = int(time.time() * 1000)
+            status["linear_stream"] = linear_stream.status()
             store.set_runtime("v24_stream_status", status)
             print("V24_STREAM_STATUS", json.dumps(status, default=str), flush=True)
             await asyncio.sleep(max(10, int(os.getenv("V24_STATUS_SECONDS", "30"))))
@@ -109,6 +121,27 @@ async def main_async():
                 reverse=True,
             )
             if ranked:
+                now_ms = int(time.time() * 1000)
+                enriched = []
+                for feature in ranked:
+                    context = linear_stream.context(feature.get("symbol"), now_ms)
+                    enriched.append({
+                        **feature,
+                        "perp_context": context,
+                    })
+                ranked = enriched
+                store.set_runtime("v24_perp_context_top", {
+                    "generated_at_ms": now_ms,
+                    "top": [
+                        {
+                            "symbol": x.get("symbol"),
+                            "microstructure_score": x.get("microstructure_score"),
+                            "perp_context": x.get("perp_context"),
+                        }
+                        for x in ranked[:10]
+                    ],
+                    "auto_weight_in_signal": False,
+                })
                 summary = runtime.shadow.process(ranked, runtime.current_regime())
                 store.set_runtime("v24_event_shadow_summary", summary)
                 fingerprint = json.dumps({
@@ -122,7 +155,12 @@ async def main_async():
                     last_print = fingerprint
             await asyncio.sleep(max(0.5, float(os.getenv("V24_DECISION_INTERVAL_SECONDS", "1.0"))))
 
-    await asyncio.gather(stream.run_forever(), status_loop(), decision_loop())
+    await asyncio.gather(
+        stream.run_forever(),
+        linear_stream.run_forever(),
+        status_loop(),
+        decision_loop(),
+    )
 
 
 def main():
