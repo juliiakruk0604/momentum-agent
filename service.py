@@ -17,23 +17,46 @@ import uvicorn
 logger = logging.getLogger(__name__)
 
 
-def historical_backfill_unresolved_symbols(store) -> list[str]:
+def historical_backfill_integrity(store) -> dict:
     runtime = store.get_runtime("historical_backfill_state") or {}
     state = runtime.get("value") or {}
-    symbols = state.get("unresolved_retry_symbols") or []
-    return sorted({str(symbol) for symbol in symbols if symbol})
+    symbols = sorted({str(symbol) for symbol in (state.get("unresolved_retry_symbols") or []) if symbol})
+    retry_attempts = state.get("retry_attempts") or {}
+    max_retry_attempts = max(1, int(os.getenv("HISTORICAL_BACKFILL_RETRY_ATTEMPTS", "2")))
+    exhausted = [
+        symbol for symbol in symbols
+        if int(retry_attempts.get(symbol, 0)) >= max_retry_attempts
+    ]
+    retryable = [symbol for symbol in symbols if symbol not in set(exhausted)]
+    return {
+        "unresolved_symbols": symbols,
+        "unresolved_count": len(symbols),
+        "retryable_count": len(retryable),
+        "exhausted_count": len(exhausted),
+    }
+
+
+def historical_backfill_unresolved_symbols(store) -> list[str]:
+    return historical_backfill_integrity(store)["unresolved_symbols"]
 
 
 def install_micro_live_integrity_guard(worker_module):
     original = worker_module.process_micro_live
 
     def guarded_process_micro_live(store):
-        unresolved = historical_backfill_unresolved_symbols(store)
-        if unresolved:
+        integrity = historical_backfill_integrity(store)
+        if integrity["unresolved_count"]:
+            reason = (
+                "historical_backfill_retry_budget_exhausted"
+                if integrity["retryable_count"] == 0 and integrity["exhausted_count"] > 0
+                else "historical_backfill_has_unresolved_runs"
+            )
             return {
                 "action": "NO_TRADE",
-                "reason": "historical_backfill_has_unresolved_runs",
-                "unresolved_count": len(unresolved),
+                "reason": reason,
+                "unresolved_count": integrity["unresolved_count"],
+                "retryable_count": integrity["retryable_count"],
+                "exhausted_count": integrity["exhausted_count"],
             }
         return original(store)
 
