@@ -290,15 +290,63 @@ def _metrics(rows):
     }
 
 
+def _coverage_metrics(rows):
+    n = len(rows)
+    if n == 0:
+        return {
+            "n":0,
+            "base_fraction":0.0,
+            "cross_section_fraction":0.0,
+            "normalized_fraction":0.0,
+            "sequence_fraction":0.0,
+            "perp_fraction":0.0,
+            "cross_exchange_fraction":0.0,
+        }
+    def frac(fn):
+        return sum(bool(fn(r.get("snapshot") or {})) for r in rows) / n
+    return {
+        "n": n,
+        "base_fraction": frac(lambda s: s.get("base_momentum")),
+        "cross_section_fraction": frac(lambda s: _n(s, "base_momentum", "cross_section")),
+        "normalized_fraction": frac(lambda s: _n(s, "base_momentum", "normalized_momentum")),
+        "sequence_fraction": frac(lambda s: s.get("sequence_context")),
+        "perp_fraction": frac(lambda s: _n(s, "perp_context", "available")),
+        "cross_exchange_fraction": frac(
+            lambda s: bool(_n(s, "cross_exchange", "binance_available"))
+            or bool(_n(s, "cross_exchange", "okx_available"))
+        ),
+    }
+
+
 def run_v25_evidence(store):
-    result={"engine":"MomentumAgentV2.5","mode":"LAYER_ABLATION_PURGED","auto_apply":False,"horizons":{},"hypotheses":{}}
+    boundary_row = store.get_runtime("v25_full_base_context_started")
+    boundary = None if boundary_row is None else boundary_row.get("value")
+    boundary_ms = int((boundary or {}).get("started_ms") or 0)
+    result={
+        "engine":"MomentumAgentV2.5",
+        "mode":"LAYER_ABLATION_PURGED",
+        "auto_apply":False,
+        "generation_boundary":boundary,
+        "horizons":{},
+        "hypotheses":{},
+    }
     for horizon in (300,900,1800):
         raw=store.v24_labeled_snapshots_with_base(
             horizon,
             limit=30000,
             max_base_age_seconds=int(os.getenv("V25_MAX_BASE_SIGNAL_AGE_SECONDS", "150")),
         )
-        h={"raw_n":len(raw),"variants":{}}
+        post_boundary = [
+            r for r in raw
+            if boundary_ms <= 0 or int(r.get("snapshot_ms") or 0) >= boundary_ms
+        ]
+        h={
+            "raw_n":len(raw),
+            "post_boundary_n":len(post_boundary),
+            "coverage_all":_coverage_metrics(raw),
+            "coverage_post_boundary":_coverage_metrics(post_boundary),
+            "variants":{},
+        }
         for name,gate in VARIANTS.items():
             selected=[r for r in raw if gate(r.get("snapshot") or {})]
             selected=_nonoverlap(selected,horizon)
@@ -316,7 +364,11 @@ def run_v25_evidence(store):
 
         hyp = {}
         for name, gate in RESEARCH_HYPOTHESES.items():
-            selected = [r for r in raw if gate(r.get("snapshot") or {})]
+            source_rows = post_boundary if name in {
+                "cross_section_momentum",
+                "volume_breakout",
+            } else raw
+            selected = [r for r in source_rows if gate(r.get("snapshot") or {})]
             selected = _nonoverlap(selected, horizon)
             train, valid = _split(selected, horizon)
             hyp[name] = {
