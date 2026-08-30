@@ -35,7 +35,7 @@ def cost_adjusted_levels(stop_pct, target_pct, micro=None):
         "net_risk_pct": net_risk,
         "net_rr": net_rr,
         "required_target_pct": required_target,
-        "blocked": blocked or net_rr < min_net_rr,
+        "blocked": blocked or (net_rr + 1e-9 < min_net_rr),
     }
 
 
@@ -99,4 +99,8 @@ def risk_decision(candidate, micro, equity_usdt=15.0, realized_today_usdt=0.0, h
         stop_pct=float(levels["stop_pct"]),
         target_pct=float(levels["target_pct"]),
         blockers=blockers,
+        execution_cost_pct=round(float(levels["cost_pct"]), 6),
+        net_risk_pct=round(float(levels["net_risk_pct"]), 6),
+        net_reward_pct=round(float(levels["net_reward_pct"]), 6),
+        net_rr=round(float(levels["net_rr"]), 6),
     )
