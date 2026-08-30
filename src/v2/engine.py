@@ -8,6 +8,7 @@ from .provider import BybitV2Provider
 from .regime import detect_regime
 from .risk import microstructure, risk_decision
 from .setups import evaluate_setups
+from .diagnostics import diagnostic_strength, setup_blockers
 
 
 def _closed_15m(frame, now=None):
@@ -44,6 +45,7 @@ def scan_v2(provider=None, universe_limit=None):
     symbols = provider.liquid_spot_usdt_symbols(limit=limit, min_turnover=min_turnover)
 
     raw_candidates = []
+    near_misses = []
     errors = []
     scanned = 0
 
@@ -57,6 +59,16 @@ def scan_v2(provider=None, universe_limit=None):
             for candidate in setups:
                 if candidate.score >= min_score:
                     raw_candidates.append(candidate)
+            if not setups:
+                blockers = setup_blockers(f, regime)
+                near_misses.append({
+                    "symbol": symbol,
+                    "diagnostic_score": diagnostic_strength(f, regime),
+                    "regime": regime.name,
+                    "blockers": blockers,
+                    "features": f.to_dict(),
+                    "never_authorizes_trade": True,
+                })
             scanned += 1
         except Exception as exc:
             errors.append({"symbol": symbol, "error": repr(exc)[:180]})
@@ -115,4 +127,9 @@ def scan_v2(provider=None, universe_limit=None):
         "errors": errors[:20],
         "candidate_count": len(enriched),
         "candidates": enriched[:8],
+        "near_misses": sorted(
+            near_misses,
+            key=lambda x: x.get("diagnostic_score", 0.0),
+            reverse=True,
+        )[:8],
     }
