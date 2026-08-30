@@ -895,7 +895,7 @@ class SignalStore:
         for row in rows:
             snapshot = _loads(row.get("payload_json")) or {}
             label = _loads(row.get("label_json")) or {}
-            if str(label.get("label_version") or "") != "price_tick_v2":
+            if str(label.get("label_version") or "") != "price_tick_v3_passage":
                 continue
             out.append({
                 "snapshot_ms": int(row.get("snapshot_ms") or 0),
