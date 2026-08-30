@@ -17,11 +17,35 @@ import uvicorn
 logger = logging.getLogger(__name__)
 
 
+def historical_backfill_unresolved_symbols(store) -> list[str]:
+    runtime = store.get_runtime("historical_backfill_state") or {}
+    state = runtime.get("value") or {}
+    symbols = state.get("unresolved_retry_symbols") or []
+    return sorted({str(symbol) for symbol in symbols if symbol})
+
+
+def install_micro_live_integrity_guard(worker_module):
+    original = worker_module.process_micro_live
+
+    def guarded_process_micro_live(store):
+        unresolved = historical_backfill_unresolved_symbols(store)
+        if unresolved:
+            return {
+                "action": "NO_TRADE",
+                "reason": "historical_backfill_has_unresolved_runs",
+                "unresolved_count": len(unresolved),
+            }
+        return original(store)
+
+    worker_module.process_micro_live = guarded_process_micro_live
+
+
 def run_worker():
     try:
-        from worker import main
+        import worker
 
-        main()
+        install_micro_live_integrity_guard(worker)
+        worker.main()
     except BaseException:
         logger.exception("market worker terminated unexpectedly")
         os._exit(1)
