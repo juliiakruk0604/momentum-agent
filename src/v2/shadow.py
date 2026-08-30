@@ -76,9 +76,9 @@ def _today_realized(state):
 
 
 def _signal_key(scan, candidate):
-    generated = str(scan.get("generated_at") or "")
-    bucket = generated[:16]
-    return f"{bucket}:{candidate.get('symbol')}:{candidate.get('setup')}"
+    features = candidate.get("features") or {}
+    signal_time = str(features.get("signal_time") or scan.get("generated_at") or "")
+    return f"{signal_time}:{candidate.get('symbol')}:{candidate.get('setup')}"
 
 
 def _close(state, event):
@@ -329,7 +329,8 @@ def process_v2_shadow(store, provider=None):
     if pos:
         ticker = provider.ticker(pos["symbol"], "spot")
         bid = float(ticker.get("bid1Price") or ticker.get("lastPrice") or 0.0)
-        open_value = float(pos["quantity"]) * bid
+        exit_slip = float(os.getenv("V2_EXIT_SLIPPAGE_PCT", "0.05"))
+        open_value = float(pos["quantity"]) * bid * (1.0 - exit_slip / 100.0)
         fee_rate = float(os.getenv("V2_FEE_RATE", "0.001"))
         state["unrealized_pnl_usdt"] = (
             open_value
