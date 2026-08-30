@@ -109,6 +109,40 @@ CREATE TABLE IF NOT EXISTS v22_flow_labels(
   PRIMARY KEY(symbol,snapshot_time,horizon_minutes)
 );
 CREATE INDEX IF NOT EXISTS idx_v22_flow_labels_horizon ON v22_flow_labels(horizon_minutes);
+CREATE TABLE IF NOT EXISTS v24_feature_snapshots(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_ms INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  best_bid REAL,
+  best_ask REAL,
+  mid REAL,
+  microstructure_score REAL,
+  regime TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(symbol,snapshot_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_feature_symbol_ms ON v24_feature_snapshots(symbol,snapshot_ms);
+CREATE INDEX IF NOT EXISTS idx_v24_feature_ms ON v24_feature_snapshots(snapshot_ms);
+CREATE TABLE IF NOT EXISTS v24_feature_labels(
+  symbol TEXT NOT NULL,
+  snapshot_ms INTEGER NOT NULL,
+  horizon_seconds INTEGER NOT NULL,
+  entry_ask REAL NOT NULL,
+  final_bid_return_pct REAL,
+  mfe_bid_pct REAL,
+  mae_bid_pct REAL,
+  hit_0_1 INTEGER DEFAULT 0,
+  hit_0_25 INTEGER DEFAULT 0,
+  hit_0_5 INTEGER DEFAULT 0,
+  hit_1 INTEGER DEFAULT 0,
+  hit_2 INTEGER DEFAULT 0,
+  payload_json TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(symbol,snapshot_ms,horizon_seconds)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_labels_horizon ON v24_feature_labels(horizon_seconds);
 '''
 
 POSTGRES_SCHEMA = '''
@@ -205,6 +239,40 @@ CREATE TABLE IF NOT EXISTS v22_flow_labels(
   PRIMARY KEY(symbol,snapshot_time,horizon_minutes)
 );
 CREATE INDEX IF NOT EXISTS idx_v22_flow_labels_horizon ON v22_flow_labels(horizon_minutes);
+CREATE TABLE IF NOT EXISTS v24_feature_snapshots(
+  id BIGSERIAL PRIMARY KEY,
+  snapshot_ms BIGINT NOT NULL,
+  symbol TEXT NOT NULL,
+  best_bid DOUBLE PRECISION,
+  best_ask DOUBLE PRECISION,
+  mid DOUBLE PRECISION,
+  microstructure_score DOUBLE PRECISION,
+  regime TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(symbol,snapshot_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_feature_symbol_ms ON v24_feature_snapshots(symbol,snapshot_ms);
+CREATE INDEX IF NOT EXISTS idx_v24_feature_ms ON v24_feature_snapshots(snapshot_ms);
+CREATE TABLE IF NOT EXISTS v24_feature_labels(
+  symbol TEXT NOT NULL,
+  snapshot_ms BIGINT NOT NULL,
+  horizon_seconds INTEGER NOT NULL,
+  entry_ask DOUBLE PRECISION NOT NULL,
+  final_bid_return_pct DOUBLE PRECISION,
+  mfe_bid_pct DOUBLE PRECISION,
+  mae_bid_pct DOUBLE PRECISION,
+  hit_0_1 BOOLEAN DEFAULT FALSE,
+  hit_0_25 BOOLEAN DEFAULT FALSE,
+  hit_0_5 BOOLEAN DEFAULT FALSE,
+  hit_1 BOOLEAN DEFAULT FALSE,
+  hit_2 BOOLEAN DEFAULT FALSE,
+  payload_json TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY(symbol,snapshot_ms,horizon_seconds)
+);
+CREATE INDEX IF NOT EXISTS idx_v24_labels_horizon ON v24_feature_labels(horizon_seconds);
 CREATE INDEX IF NOT EXISTS idx_historical_events_dataset ON historical_events(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_historical_events_fold ON historical_events(dataset_id,fold_id);
 CREATE INDEX IF NOT EXISTS idx_historical_symbol_runs_dataset ON historical_symbol_runs(dataset_id);
@@ -563,6 +631,166 @@ class SignalStore:
                 "label": _loads(row.get("label_json")) or {},
             })
         return out
+
+    def upsert_v24_feature_snapshot(self, snapshot: dict):
+        snapshot_ms = int(snapshot.get("snapshot_ms") or snapshot.get("ts_ms") or 0)
+        symbol = str(snapshot.get("symbol") or "")
+        if snapshot_ms <= 0 or not symbol:
+            raise ValueError("v24 snapshot requires snapshot_ms and symbol")
+        params = (
+            snapshot_ms,
+            symbol,
+            float(snapshot.get("best_bid") or 0.0),
+            float(snapshot.get("best_ask") or 0.0),
+            float(snapshot.get("mid") or 0.0),
+            float(snapshot.get("microstructure_score") or 0.0),
+            str(snapshot.get("regime") or ""),
+            json.dumps(snapshot, default=str),
+        )
+        self._execute(
+            '''INSERT INTO v24_feature_snapshots(
+                 snapshot_ms,symbol,best_bid,best_ask,mid,microstructure_score,regime,payload_json
+               ) VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(symbol,snapshot_ms) DO UPDATE SET
+                 best_bid=excluded.best_bid,best_ask=excluded.best_ask,mid=excluded.mid,
+                 microstructure_score=excluded.microstructure_score,regime=excluded.regime,
+                 payload_json=excluded.payload_json''',
+            '''INSERT INTO v24_feature_snapshots(
+                 snapshot_ms,symbol,best_bid,best_ask,mid,microstructure_score,regime,payload_json
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT(symbol,snapshot_ms) DO UPDATE SET
+                 best_bid=EXCLUDED.best_bid,best_ask=EXCLUDED.best_ask,mid=EXCLUDED.mid,
+                 microstructure_score=EXCLUDED.microstructure_score,regime=EXCLUDED.regime,
+                 payload_json=EXCLUDED.payload_json''',
+            params,
+        )
+
+    def v24_feature_snapshot_stats(self):
+        total = self._execute(
+            "SELECT COUNT(*) AS n FROM v24_feature_snapshots",
+            "SELECT COUNT(*) AS n FROM v24_feature_snapshots",
+            fetch="one",
+        )
+        symbols = self._execute(
+            "SELECT COUNT(DISTINCT symbol) AS n FROM v24_feature_snapshots",
+            "SELECT COUNT(DISTINCT symbol) AS n FROM v24_feature_snapshots",
+            fetch="one",
+        )
+        latest = self._execute(
+            "SELECT MAX(snapshot_ms) AS ms FROM v24_feature_snapshots",
+            "SELECT MAX(snapshot_ms) AS ms FROM v24_feature_snapshots",
+            fetch="one",
+        )
+        return {
+            "snapshots": int((total or {}).get("n") or 0),
+            "symbols": int((symbols or {}).get("n") or 0),
+            "latest_snapshot_ms": None if not latest else latest.get("ms"),
+        }
+
+    def v24_label_candidates(self, horizon_seconds: int, limit: int = 100):
+        cutoff_ms = int(_utc_now().timestamp() * 1000) - int(horizon_seconds) * 1000 - 5000
+        return self._execute(
+            '''SELECT s.* FROM v24_feature_snapshots s
+               LEFT JOIN v24_feature_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                AND l.horizon_seconds=?
+               WHERE s.snapshot_ms<=? AND l.symbol IS NULL
+               ORDER BY s.snapshot_ms ASC LIMIT ?''',
+            '''SELECT s.* FROM v24_feature_snapshots s
+               LEFT JOIN v24_feature_labels l
+                 ON l.symbol=s.symbol AND l.snapshot_ms=s.snapshot_ms
+                AND l.horizon_seconds=%s
+               WHERE s.snapshot_ms<=%s AND l.symbol IS NULL
+               ORDER BY s.snapshot_ms ASC LIMIT %s''',
+            (int(horizon_seconds), cutoff_ms, int(limit)),
+            fetch="all",
+        )
+
+    def v24_feature_path(self, symbol: str, start_ms: int, end_ms: int):
+        return self._execute(
+            '''SELECT snapshot_ms,best_bid,best_ask,mid,microstructure_score,payload_json
+               FROM v24_feature_snapshots
+               WHERE symbol=? AND snapshot_ms>? AND snapshot_ms<=?
+               ORDER BY snapshot_ms ASC''',
+            '''SELECT snapshot_ms,best_bid,best_ask,mid,microstructure_score,payload_json
+               FROM v24_feature_snapshots
+               WHERE symbol=%s AND snapshot_ms>%s AND snapshot_ms<=%s
+               ORDER BY snapshot_ms ASC''',
+            (str(symbol), int(start_ms), int(end_ms)),
+            fetch="all",
+        )
+
+    def upsert_v24_feature_label(self, label: dict):
+        params = (
+            str(label["symbol"]),
+            int(label["snapshot_ms"]),
+            int(label["horizon_seconds"]),
+            float(label["entry_ask"]),
+            float(label.get("final_bid_return_pct") or 0.0),
+            float(label.get("mfe_bid_pct") or 0.0),
+            float(label.get("mae_bid_pct") or 0.0),
+            bool(label.get("hit_0_1")),
+            bool(label.get("hit_0_25")),
+            bool(label.get("hit_0_5")),
+            bool(label.get("hit_1")),
+            bool(label.get("hit_2")),
+            json.dumps(label, default=str),
+        )
+        self._execute(
+            '''INSERT INTO v24_feature_labels(
+                 symbol,snapshot_ms,horizon_seconds,entry_ask,final_bid_return_pct,mfe_bid_pct,mae_bid_pct,
+                 hit_0_1,hit_0_25,hit_0_5,hit_1,hit_2,payload_json,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(symbol,snapshot_ms,horizon_seconds) DO UPDATE SET
+                 entry_ask=excluded.entry_ask,final_bid_return_pct=excluded.final_bid_return_pct,
+                 mfe_bid_pct=excluded.mfe_bid_pct,mae_bid_pct=excluded.mae_bid_pct,
+                 hit_0_1=excluded.hit_0_1,hit_0_25=excluded.hit_0_25,hit_0_5=excluded.hit_0_5,
+                 hit_1=excluded.hit_1,hit_2=excluded.hit_2,payload_json=excluded.payload_json,
+                 updated_at=CURRENT_TIMESTAMP''',
+            '''INSERT INTO v24_feature_labels(
+                 symbol,snapshot_ms,horizon_seconds,entry_ask,final_bid_return_pct,mfe_bid_pct,mae_bid_pct,
+                 hit_0_1,hit_0_25,hit_0_5,hit_1,hit_2,payload_json,updated_at
+               ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+               ON CONFLICT(symbol,snapshot_ms,horizon_seconds) DO UPDATE SET
+                 entry_ask=EXCLUDED.entry_ask,final_bid_return_pct=EXCLUDED.final_bid_return_pct,
+                 mfe_bid_pct=EXCLUDED.mfe_bid_pct,mae_bid_pct=EXCLUDED.mae_bid_pct,
+                 hit_0_1=EXCLUDED.hit_0_1,hit_0_25=EXCLUDED.hit_0_25,hit_0_5=EXCLUDED.hit_0_5,
+                 hit_1=EXCLUDED.hit_1,hit_2=EXCLUDED.hit_2,payload_json=EXCLUDED.payload_json,
+                 updated_at=NOW()''',
+            params,
+        )
+
+    def v24_feature_label_stats(self):
+        return self._execute(
+            '''SELECT horizon_seconds,COUNT(*) AS n,
+                      AVG(final_bid_return_pct) AS avg_final,
+                      AVG(mfe_bid_pct) AS avg_mfe,
+                      AVG(mae_bid_pct) AS avg_mae,
+                      AVG(hit_0_1) AS p_hit_0_1,
+                      AVG(hit_0_25) AS p_hit_0_25,
+                      AVG(hit_0_5) AS p_hit_0_5,
+                      AVG(hit_1) AS p_hit_1,
+                      AVG(hit_2) AS p_hit_2
+               FROM v24_feature_labels GROUP BY horizon_seconds ORDER BY horizon_seconds''',
+            '''SELECT horizon_seconds,COUNT(*) AS n,
+                      AVG(final_bid_return_pct) AS avg_final,
+                      AVG(mfe_bid_pct) AS avg_mfe,
+                      AVG(mae_bid_pct) AS avg_mae,
+                      AVG((hit_0_1)::int) AS p_hit_0_1,
+                      AVG((hit_0_25)::int) AS p_hit_0_25,
+                      AVG((hit_0_5)::int) AS p_hit_0_5,
+                      AVG((hit_1)::int) AS p_hit_1,
+                      AVG((hit_2)::int) AS p_hit_2
+               FROM v24_feature_labels GROUP BY horizon_seconds ORDER BY horizon_seconds''',
+            fetch="all",
+        )
+
+    def prune_v24_feature_snapshots(self, older_than_ms: int):
+        self._execute(
+            "DELETE FROM v24_feature_snapshots WHERE snapshot_ms<?",
+            "DELETE FROM v24_feature_snapshots WHERE snapshot_ms<%s",
+            (int(older_than_ms),),
+        )
 
     def set_runtime(self, key: str, value):
         payload = json.dumps(value, default=str)
