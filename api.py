@@ -12,6 +12,7 @@ from src.execution.bybit_spot import dry_run_suite
 from src.shadow_portfolio import summary as shadow_summary
 from src.v2.shadow import summary as v2_shadow_summary
 from src.v2.readiness import evaluate_v2_readiness
+from src.v22.shadow import summary as v22_shadow_summary
 
 app = FastAPI(title="Momentum Research Agent", version="3.3.6")
 store = SignalStore()
@@ -459,3 +460,29 @@ def v2_backtest_status():
 @app.get("/v2/readiness")
 def v2_readiness():
     return evaluate_v2_readiness(store)
+
+
+@app.get("/v22/status")
+def v22_status():
+    row = store.get_runtime("v22_fast_scan")
+    value = None if row is None else row.get("value")
+    if not isinstance(value, dict):
+        return {
+            "engine": "MomentumAgentV2.2",
+            "status": "waiting_for_first_fast_scan",
+            "live_execution": False,
+        }
+    return value
+
+
+@app.get("/v22/shadow-pnl")
+def v22_shadow_pnl():
+    row = store.get_runtime("v22_shadow_portfolio")
+    if row is None or not isinstance(row.get("value"), dict):
+        return {
+            "mode": "V2.2_SENSITIVE_RUNNER_SHADOW",
+            "status": "not_started",
+            "starting_equity_usdt": float(os.getenv("V22_SHADOW_START_EQUITY_USDT", "15")),
+            "live_execution": False,
+        }
+    return v22_shadow_summary(row["value"])
