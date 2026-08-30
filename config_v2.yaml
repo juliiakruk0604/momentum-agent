@@ -1,0 +1,33 @@
+mode: shadow
+market:
+  category: spot
+  universe_limit: 40
+  min_turnover_24h_usdt: 5000000
+  scan_interval_minutes: 15
+features:
+  signal_interval: "15"
+  path_interval: "1"
+setups:
+  enabled:
+    - MOMENTUM_BREAKOUT
+    - EARLY_ACCELERATION
+    - PULLBACK_RETEST
+ranking:
+  min_candidate_score: 65
+  max_candidates: 5
+risk:
+  starting_equity_usdt: 15
+  max_notional_usdt: 5
+  max_risk_usdt: 0.15
+  max_open_positions: 1
+  daily_stop_usdt: 0.50
+execution:
+  live_enabled: false
+  fee_rate: 0.001
+  entry_slippage_pct: 0.05
+  exit_slippage_pct: 0.05
+  same_candle_policy: STOP_FIRST
+research:
+  spot_is_execution_truth: true
+  perp_features_auxiliary_only: true
+  require_identical_simulator_for_history_and_shadow: true
