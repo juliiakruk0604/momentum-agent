@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import statistics
 import pandas as pd
 
 
@@ -132,19 +133,58 @@ def _split(rows, horizon_seconds):
     )
 
 
+def _max_drawdown_pct(returns_pct):
+    equity = 100.0
+    peak = 100.0
+    worst = 0.0
+    for r in returns_pct:
+        equity *= 1.0 + float(r) / 100.0
+        peak = max(peak, equity)
+        if peak > 0:
+            worst = min(worst, (equity / peak - 1.0) * 100.0)
+    return worst
+
+
 def _metrics(rows):
     if not rows:
-        return {"n":0,"avg_gross_pct":None,"avg_spot_net_pct":None,"avg_perp1x_fee_cf_pct":None,"positive_spot_net_fraction":None}
+        return {
+            "n":0,
+            "avg_gross_pct":None,
+            "avg_spot_net_pct":None,
+            "median_spot_net_pct":None,
+            "spot_profit_factor":None,
+            "spot_lower_mean_90_pct":None,
+            "spot_max_drawdown_pct":None,
+            "avg_perp1x_fee_cf_pct":None,
+            "positive_spot_net_fraction":None,
+        }
+
     spot_cost = 2.0 * float(os.getenv("V2_FEE_RATE", "0.001")) * 100.0 + float(os.getenv("V24_ENTRY_SLIPPAGE_PCT","0.03")) + float(os.getenv("V24_EXIT_SLIPPAGE_PCT","0.03"))
     perp_cost = 2.0 * float(os.getenv("V25_PERP_TAKER_FEE_RATE","0.00055")) * 100.0 + float(os.getenv("V24_ENTRY_SLIPPAGE_PCT","0.03")) + float(os.getenv("V24_EXIT_SLIPPAGE_PCT","0.03"))
     gross = [_f((r.get("label") or {}).get("final_bid_return_pct")) for r in rows]
     spot = [x - spot_cost for x in gross]
     perp = [x - perp_cost for x in gross]
     n=len(rows)
+
+    avg_spot = sum(spot) / n
+    med_spot = statistics.median(spot)
+    wins = sum(x for x in spot if x > 0)
+    losses = abs(sum(x for x in spot if x < 0))
+    pf = None if losses <= 1e-12 else wins / losses
+
+    lower90 = None
+    if n >= 2:
+        std = statistics.stdev(spot)
+        lower90 = avg_spot - 1.6448536269514722 * std / math.sqrt(n)
+
     return {
         "n":n,
         "avg_gross_pct":sum(gross)/n,
-        "avg_spot_net_pct":sum(spot)/n,
+        "avg_spot_net_pct":avg_spot,
+        "median_spot_net_pct":med_spot,
+        "spot_profit_factor":pf,
+        "spot_lower_mean_90_pct":lower90,
+        "spot_max_drawdown_pct":_max_drawdown_pct(spot),
         "avg_perp1x_fee_cf_pct":sum(perp)/n,
         "positive_spot_net_fraction":sum(x>0 for x in spot)/n,
         "positive_perp1x_cf_fraction":sum(x>0 for x in perp)/n,
@@ -170,25 +210,44 @@ def run_v25_evidence(store):
             v=d["validation"]
             d["validation_spot_lift_vs_base_pct"]=None if v["avg_spot_net_pct"] is None or base_v["avg_spot_net_pct"] is None else v["avg_spot_net_pct"]-base_v["avg_spot_net_pct"]
         result["horizons"][str(horizon)]=h
+
     promotion = {
         "candidate_promotable": False,
         "reasons": [],
-        "required_validation_n": int(os.getenv("V25_PROMOTION_MIN_VALIDATION_N", "20")),
+        "required_validation_n": int(os.getenv("V25_PROMOTION_MIN_VALIDATION_N", "30")),
+        "required_profit_factor": float(os.getenv("V25_PROMOTION_MIN_PROFIT_FACTOR", "1.20")),
+        "max_drawdown_pct": float(os.getenv("V25_PROMOTION_MAX_DRAWDOWN_PCT", "10.0")),
         "required_horizons": [900, 1800],
+        "requires_positive_lower_mean_90": True,
     }
+
     for horizon in promotion["required_horizons"]:
         h = result["horizons"].get(str(horizon)) or {}
         full = (h.get("variants") or {}).get("full_v25") or {}
         valid = full.get("validation") or {}
         n = int(valid.get("n") or 0)
         net = valid.get("avg_spot_net_pct")
+        median = valid.get("median_spot_net_pct")
+        lower90 = valid.get("spot_lower_mean_90_pct")
+        pf = valid.get("spot_profit_factor")
+        dd = abs(float(valid.get("spot_max_drawdown_pct") or 0.0))
         lift = full.get("validation_spot_lift_vs_base_pct")
+
         if n < promotion["required_validation_n"]:
             promotion["reasons"].append(f"h{horizon}:insufficient_validation_n")
         if net is None or float(net) <= 0.0:
             promotion["reasons"].append(f"h{horizon}:spot_net_nonpositive")
+        if median is None or float(median) <= 0.0:
+            promotion["reasons"].append(f"h{horizon}:median_spot_net_nonpositive")
+        if lower90 is None or float(lower90) <= 0.0:
+            promotion["reasons"].append(f"h{horizon}:lower_mean_90_nonpositive")
+        if pf is None or float(pf) < promotion["required_profit_factor"]:
+            promotion["reasons"].append(f"h{horizon}:profit_factor_low")
+        if dd > promotion["max_drawdown_pct"]:
+            promotion["reasons"].append(f"h{horizon}:drawdown_too_high")
         if lift is None or float(lift) <= 0.0:
             promotion["reasons"].append(f"h{horizon}:no_lift_vs_base")
+
     promotion["candidate_promotable"] = len(promotion["reasons"]) == 0
     result["promotion"] = promotion
     store.set_runtime("v25_evidence",result)
