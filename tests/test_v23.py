@@ -5,6 +5,7 @@ from src.v23.confirm import confirmation_decision
 
 def base_candidate():
     return {
+        "_scan_generated_at": "2026-08-30T09:01:05Z",
         "symbol": "HYPEUSDT",
         "action": "SHADOW_READY",
         "score": 84.0,
@@ -30,6 +31,7 @@ def test_v23_requires_time_separation():
         "armed_at": "2026-08-30T09:00:00Z",
         "signal_price": 100.0,
         "score": 86.0,
+        "scan_generated_at": "2026-08-30T09:00:05Z",
     }
     d = confirmation_decision(
         armed,
@@ -46,6 +48,7 @@ def test_v23_confirms_persistent_impulse():
         "armed_at": "2026-08-30T09:00:00Z",
         "signal_price": 100.0,
         "score": 86.0,
+        "scan_generated_at": "2026-08-30T09:00:05Z",
     }
     d = confirmation_decision(
         armed,
@@ -61,6 +64,7 @@ def test_v23_rejects_flow_collapse():
         "armed_at": "2026-08-30T09:00:00Z",
         "signal_price": 100.0,
         "score": 86.0,
+        "scan_generated_at": "2026-08-30T09:00:05Z",
     }
     c = base_candidate()
     c["flow_score"] = 20.0
@@ -73,3 +77,22 @@ def test_v23_rejects_flow_collapse():
     assert d["confirmed"] is False
     assert "flow_low" in d["reasons"]
     assert "buy_ratio_low" in d["reasons"]
+
+
+def test_v23_rejects_same_snapshot():
+    armed = {
+        "symbol": "HYPEUSDT",
+        "armed_at": "2026-08-30T09:00:00Z",
+        "signal_price": 100.0,
+        "score": 86.0,
+        "scan_generated_at": "2026-08-30T09:00:05Z",
+    }
+    c = base_candidate()
+    c["_scan_generated_at"] = "2026-08-30T09:00:05Z"
+    d = confirmation_decision(
+        armed,
+        c,
+        now=pd.Timestamp("2026-08-30T09:00:50Z"),
+    )
+    assert d["confirmed"] is False
+    assert "same_snapshot" in d["reasons"]
