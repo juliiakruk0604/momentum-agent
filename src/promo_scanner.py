@@ -86,7 +86,7 @@ def _page_text(url: str) -> str:
 
 def _extract_min_capital(text: str) -> float | None:
     patterns = [
-        r"(?:minimum|min\.?|at least|hold at least|deposit at least|minimum deposit(?: of)?|minimum holding(?: of)?)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:USDT|USDC|USD1|USD)",
+        r"(?:minimum(?: of)?|min\.?|at least|hold at least|hold a minimum of|deposit at least|minimum deposit(?: of)?|minimum holding(?: of)?)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:USDT|USDC|USD1|USD)",
         r"(\d+(?:\.\d+)?)\s*(?:USDT|USDC|USD1|USD)\s*(?:minimum|min\.?|or more|and above)",
     ]
     values: list[float] = []
