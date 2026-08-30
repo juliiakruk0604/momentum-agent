@@ -353,6 +353,23 @@ async def main_async():
                             "ranked_count": len(ranked),
                             "note": "generation boundary for full fast-universe alpha context",
                         })
+
+                slow_ready = sum(
+                    bool((x.get("base_momentum") or {}).get("fast_features", {}).get("trend_efficiency_30m") is not None)
+                    and bool((x.get("base_momentum") or {}).get("fast_features", {}).get("amihud_30m_pct_per_m_usdt") is not None)
+                    for x in ranked
+                )
+                slow_ratio = 0.0 if not ranked else slow_ready / len(ranked)
+                if slow_ratio >= float(os.getenv("V25_SLOW_STATE_COVERAGE_RATIO", "0.80")):
+                    if store.get_runtime("v25_slow_state_gen2_started") is None:
+                        store.set_runtime("v25_slow_state_gen2_started", {
+                            "started_ms": now_ms,
+                            "coverage_ratio": slow_ratio,
+                            "slow_state_attached": slow_ready,
+                            "ranked_count": len(ranked),
+                            "hypothesis_generation": 2,
+                            "note": "clean boundary for slow microstructure / trend-efficiency research",
+                        })
                 hybrid_fp = json.dumps({
                     "armed": hybrid.get("armed"),
                     "open": None if not hybrid.get("open_position") else hybrid["open_position"].get("symbol"),
