@@ -19,6 +19,7 @@ class FastFeatures:
     compression_ratio: float
     rs_5m_pct: float
     coarse_score: float
+    current_move_pct: float = 0.0
 
     def to_dict(self):
         return asdict(self)
