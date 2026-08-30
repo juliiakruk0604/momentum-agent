@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import time
 from dataclasses import dataclass, asdict
@@ -11,11 +12,22 @@ import requests
 BASE_URL = "https://api.bybit.com"
 SAFE_KEYWORDS = (
     "reward", "airdrop", "earn", "hold", "deposit", "campaign",
-    "bonus", "launchpool", "token splash", "cashback", "share",
+    "bonus", "launchpool", "token splash", "cashback",
 )
 RISKY_KEYWORDS = (
     "futures", "perpetual", "derivative", "margin", "options",
     "leverage", "copy trading", "perps", "tradfi",
+)
+MANUAL_KEYWORDS = (
+    "invite", "referral", "refer", "lottery", "lucky draw",
+    "randomly selected", "first come", "fcfs", "connect wallet",
+)
+REGION_KEYWORDS = (
+    "exclusive", "eligible regions", "selected regions", "restricted jurisdictions",
+)
+NEW_USER_KEYWORDS = (
+    "new users only", "new user only", "first deposit", "first trade",
+    "newly registered", "new users",
 )
 
 
@@ -30,6 +42,12 @@ class PromoCandidate:
     score: int
     action: str
     reasons: list[str]
+    min_capital_usd: float | None = None
+    reward_summary: str | None = None
+    requires_new_user: bool = False
+    region_restricted: bool = False
+    manual_or_lottery: bool = False
+    detail_checked: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +64,114 @@ def _fetch_announcements(limit: int = 50) -> list[dict[str, Any]]:
     if int(data.get("retCode", -1)) != 0:
         raise RuntimeError(f"Bybit announcements error {data.get('retCode')}: {data.get('retMsg')}")
     return ((data.get("result") or {}).get("list") or [])
+
+
+def _page_text(url: str) -> str:
+    if not url:
+        return ""
+    response = requests.get(
+        url,
+        timeout=10,
+        headers={"User-Agent": "Mozilla/5.0 promo-research-agent/1.0"},
+    )
+    response.raise_for_status()
+    text = response.text
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _extract_min_capital(text: str) -> float | None:
+    patterns = [
+        r"(?:minimum|min\.?|at least|hold at least|deposit at least|minimum deposit(?: of)?|minimum holding(?: of)?)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:USDT|USDC|USD1|USD)",
+        r"(\d+(?:\.\d+)?)\s*(?:USDT|USDC|USD1|USD)\s*(?:minimum|min\.?|or more|and above)",
+    ]
+    values: list[float] = []
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.I):
+            try:
+                values.append(float(match))
+            except Exception:
+                pass
+    return min(values) if values else None
+
+
+def _extract_reward_summary(text: str) -> str | None:
+    candidates = re.findall(
+        r"((?:earn|receive|get|reward(?:ed)? with|up to)\s+[^.]{0,90}?(?:USDT|USDC|USD1|WLFI|bonus|reward))",
+        text,
+        flags=re.I,
+    )
+    if not candidates:
+        return None
+    cleaned = re.sub(r"\s+", " ", candidates[0]).strip()
+    return cleaned[:180]
+
+
+def _enrich(candidate: PromoCandidate) -> PromoCandidate:
+    try:
+        text = _page_text(candidate.url)
+    except Exception:
+        candidate.reasons.append("detail_fetch_failed")
+        return candidate
+
+    lower = text.lower()
+    candidate.detail_checked = True
+    candidate.min_capital_usd = _extract_min_capital(text)
+    candidate.reward_summary = _extract_reward_summary(text)
+    candidate.requires_new_user = any(k in lower for k in NEW_USER_KEYWORDS)
+    candidate.region_restricted = any(k in lower for k in REGION_KEYWORDS)
+    candidate.manual_or_lottery = any(k in lower for k in MANUAL_KEYWORDS)
+
+    if candidate.min_capital_usd is not None:
+        candidate.reasons.append(f"min_capital_detected:{candidate.min_capital_usd:g}")
+        if candidate.min_capital_usd <= 2:
+            candidate.score += 20
+        elif candidate.min_capital_usd <= 15:
+            candidate.score += 8
+        else:
+            candidate.score -= 20
+
+    if candidate.requires_new_user:
+        candidate.reasons.append("new_user_requirement")
+        candidate.score -= 15
+
+    if candidate.region_restricted:
+        candidate.reasons.append("region_check_required")
+        candidate.score -= 10
+
+    if candidate.manual_or_lottery:
+        candidate.reasons.append("manual_or_probability_component")
+        candidate.score -= 15
+
+    risky_detail = [k for k in RISKY_KEYWORDS if k in lower]
+    if risky_detail:
+        candidate.reasons.append("risky_mechanic_in_details")
+        candidate.score -= 60
+
+    # AUTO here means eligible for future safe automation.
+    # It does not execute anything. Execution remains hard-disabled elsewhere.
+    if risky_detail:
+        candidate.action = "REJECT"
+    elif (
+        candidate.detail_checked
+        and candidate.min_capital_usd is not None
+        and candidate.min_capital_usd <= 2
+        and not candidate.requires_new_user
+        and not candidate.region_restricted
+        and not candidate.manual_or_lottery
+        and candidate.score >= 50
+    ):
+        candidate.action = "AUTO"
+    elif candidate.score >= 30:
+        candidate.action = "APPROVAL"
+    else:
+        candidate.action = "WATCH"
+
+    return candidate
 
 
 def _score(row: dict[str, Any], now_ms: int) -> PromoCandidate:
@@ -93,14 +219,17 @@ def _score(row: dict[str, Any], now_ms: int) -> PromoCandidate:
         except Exception:
             pass
 
-    title_numbers = [float(x.replace(",", "")) for x in re.findall(r"(\d[\d,]*(?:\.\d+)?)\s*USDT", title, flags=re.I)]
+    title_numbers = [
+        float(x.replace(",", ""))
+        for x in re.findall(r"(\d[\d,]*(?:\.\d+)?)\s*USDT", title, flags=re.I)
+    ]
     if title_numbers and min(title_numbers) <= 20:
         score += 10
         reasons.append("small_usdt_amount_in_title")
 
     action = "WATCH"
     if score >= 40 and not risky_hits:
-        action = "REVIEW"
+        action = "APPROVAL"
     if score < 0:
         action = "REJECT"
 
@@ -117,14 +246,20 @@ def _score(row: dict[str, Any], now_ms: int) -> PromoCandidate:
     )
 
 
-def scan_promos(limit: int = 50) -> dict:
+def scan_promos(limit: int = 50, enrich_top: int = 8) -> dict:
     now_ms = int(time.time() * 1000)
     rows = _fetch_announcements(limit=limit)
     candidates = [_score(row, now_ms) for row in rows]
+    candidates.sort(key=lambda x: (x.score, x.published_at_ms or 0), reverse=True)
+
+    for index, candidate in enumerate(candidates[:max(0, enrich_top)]):
+        candidates[index] = _enrich(candidate)
+
     candidates.sort(key=lambda x: (x.score, x.published_at_ms or 0), reverse=True)
     return {
         "source": "bybit_v5_announcements",
         "scanned": len(rows),
         "generated_at_ms": now_ms,
+        "execution_enabled": False,
         "candidates": [x.to_dict() for x in candidates[:20]],
     }
