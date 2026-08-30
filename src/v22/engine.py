@@ -45,21 +45,21 @@ def scan_fast_v22(provider=None, universe_limit=None):
         min_turnover=min_turnover,
     )
 
-    coarse = []
+    all_fast = []
     errors = []
     for symbol in symbols:
         try:
             bars = _closed_1m(provider.kline(symbol, "1", 91, category="spot"), now)
             f = compute_fast_features(symbol, bars, btc1, eth1)
-            if f.coarse_score >= coarse_gate:
-                coarse.append(f)
+            all_fast.append(f)
         except Exception as exc:
             errors.append({"symbol": symbol, "stage": "coarse", "error": repr(exc)[:160]})
 
-    coarse.sort(key=lambda x: x.coarse_score, reverse=True)
+    all_fast.sort(key=lambda x: x.coarse_score, reverse=True)
+    coarse_count = sum(1 for x in all_fast if x.coarse_score >= coarse_gate)
     enriched = []
 
-    for f in coarse[: int(os.getenv("V22_MICRO_TOP_N", "8"))]:
+    for f in all_fast[: int(os.getenv("V22_MICRO_TOP_N", "8"))]:
         try:
             book = provider.orderbook(f.symbol, limit=25)
             trades = provider.recent_trades(f.symbol, limit=200, category="spot")
@@ -95,6 +95,8 @@ def scan_fast_v22(provider=None, universe_limit=None):
         decision = risk_decision(candidate_obj, micro, equity_usdt=15.0)
 
         blockers = []
+        if f.coarse_score < coarse_gate:
+            blockers.append("coarse_score_low")
         if regime.name.startswith("TREND_DOWN"):
             blockers.append("market_trend_down")
         if f.ret_3m_pct <= 0:
@@ -140,7 +142,8 @@ def scan_fast_v22(provider=None, universe_limit=None):
         "generated_at": str(now),
         "regime": regime.to_dict(),
         "universe_size": len(symbols),
-        "coarse_candidates": len(coarse),
+        "coarse_candidates": coarse_count,
+        "micro_sampled": min(len(all_fast), int(os.getenv("V22_MICRO_TOP_N", "8"))),
         "candidate_count": len(enriched),
         "candidates": enriched[:8],
         "errors": errors[:20],
