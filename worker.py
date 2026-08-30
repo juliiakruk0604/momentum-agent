@@ -379,16 +379,21 @@ def run_once(provider, store, cfg, universe_limit=100):
             print("continuation_error", imp.symbol, repr(exc), flush=True)
 
     label_stats = process_labels(provider, store, cfg, now)
-    try:
-        v2_scan_stats = process_v2_scan(store, now)
-    except Exception as exc:
-        v2_scan_stats = {"performed": False, "error": repr(exc)}
-        print("v2_scan_error", repr(exc), flush=True)
-    try:
-        v2_shadow_stats = process_v2_shadow(store)
-    except Exception as exc:
-        v2_shadow_stats = {"mode": "V2_LIVE_SHADOW_1M_PATH", "error": repr(exc)}
-        print("v2_shadow_error", repr(exc), flush=True)
+    v2_live_worker_enabled = os.getenv("V2_LIVE_WORKER_ENABLED", "true").lower() in ("1","true","yes","on")
+    if v2_live_worker_enabled:
+        try:
+            v2_scan_stats = process_v2_scan(store, now)
+        except Exception as exc:
+            v2_scan_stats = {"performed": False, "error": repr(exc)}
+            print("v2_scan_error", repr(exc), flush=True)
+        try:
+            v2_shadow_stats = process_v2_shadow(store)
+        except Exception as exc:
+            v2_shadow_stats = {"mode": "V2_LIVE_SHADOW_1M_PATH", "error": repr(exc)}
+            print("v2_shadow_error", repr(exc), flush=True)
+    else:
+        v2_scan_stats = {"performed": False, "reason": "isolated_v2_market_service"}
+        v2_shadow_stats = {"mode": "V2_LIVE_SHADOW_1M_PATH", "reason": "isolated_v2_market_service"}
     try:
         shadow_stats = process_shadow_portfolio(store)
     except Exception as exc:
