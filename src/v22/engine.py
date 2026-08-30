@@ -189,6 +189,20 @@ def scan_fast_v22(provider=None, universe_limit=None, previous_scan=None):
             "regime": regime.name,
             "fast_features": f.to_dict(),
             "flow_score": flow,
+            "normalized_momentum": {
+                "ret_3m_over_rv": round(
+                    float(f.ret_3m_pct) / max(float(f.realized_vol_20m_pct) * (3.0 ** 0.5), 0.03),
+                    6,
+                ),
+                "ret_5m_over_rv": round(
+                    float(f.ret_5m_pct) / max(float(f.realized_vol_20m_pct) * (5.0 ** 0.5), 0.03),
+                    6,
+                ),
+                "rs_5m_over_rv": round(
+                    float(f.rs_5m_pct) / max(float(f.realized_vol_20m_pct) * (5.0 ** 0.5), 0.03),
+                    6,
+                ),
+            },
             "cross_section": {
                 "rs_5m_percentile": round(float(rs_pct.get(f.symbol, 0.0)), 6),
                 "ret_3m_percentile": round(float(ret3_pct.get(f.symbol, 0.0)), 6),
