@@ -380,8 +380,14 @@ def main() -> None:
     )
     if diagnostic.get("read_only"):
         raise RuntimeError("api_key_is_read_only")
-    if not diagnostic.get("safe_permissions"):
-        raise RuntimeError("unsafe_api_permissions")
+    forbidden = diagnostic.get("forbidden_permissions") or {}
+    if forbidden.get("withdraw"):
+        raise RuntimeError("withdraw_permission_present")
+    if forbidden.get("contract_trade") or forbidden.get("options"):
+        emit(
+            "PERMISSION_WARNING",
+            note="derivative permissions present but this run is hard-coded to spot and isLeverage=0",
+        )
     if not diagnostic.get("spot_trade_enabled"):
         raise RuntimeError("spot_trade_permission_missing")
 
