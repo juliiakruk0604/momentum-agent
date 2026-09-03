@@ -114,6 +114,7 @@ def select_candidate(base_url: str) -> dict | None:
         smallest_min_order_amounts=min_amounts[:8],
     )
     preliminary = []
+    small_order_markets = []
     for row in result.get("list") or []:
         symbol = str(row.get("symbol") or "")
         inst = instruments.get(symbol)
@@ -131,10 +132,18 @@ def select_candidate(base_url: str) -> dict | None:
         ask = float(row.get("ask1Price") or 0.0)
         turnover = float(row.get("turnover24h") or 0.0)
         change_24h = float(row.get("price24hPcnt") or 0.0) * 100.0
-        if min(last, bid, ask) <= 0 or turnover < 5_000_000:
+        if min(last, bid, ask) > 0:
+            small_order_markets.append({
+                "symbol": symbol,
+                "min_order_amt": min_amt,
+                "turnover_24h": round(turnover, 2),
+                "change_24h_pct": round(change_24h, 3),
+                "spread_pct": round((ask - bid) / ask * 100.0, 5),
+            })
+        if min(last, bid, ask) <= 0 or turnover < 250_000:
             continue
         spread_pct = (ask - bid) / ask * 100.0
-        if spread_pct > 0.12 or change_24h < -4.0 or change_24h > 35.0:
+        if spread_pct > 0.30 or change_24h < -4.0 or change_24h > 35.0:
             continue
         preliminary.append({
             "symbol": symbol,
@@ -146,6 +155,9 @@ def select_candidate(base_url: str) -> dict | None:
             "change_24h_pct": change_24h,
             "spread_pct": spread_pct,
         })
+
+    small_order_markets.sort(key=lambda x: x["turnover_24h"], reverse=True)
+    emit("SMALL_ORDER_MARKETS", markets=small_order_markets[:25])
 
     # Prefer liquid movers, then validate price path and volume on up to 45 names.
     preliminary.sort(
