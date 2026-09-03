@@ -11,6 +11,7 @@ import requests
 
 from src.bybit_account import (
     _find_authenticated_base_url,
+    _safe_error,
     _signed_get,
     _signed_post,
     account_diagnostic,
@@ -36,6 +37,12 @@ def public_get(base_url: str, path: str, params: dict) -> dict:
     if int(data.get("retCode", -1)) != 0:
         raise RuntimeError(f"Bybit public error {data.get('retCode')}: {data.get('retMsg')}")
     return data.get("result") or {}
+
+
+def signed_get(base_url: str, path: str, params: dict) -> dict:
+    # The helper signs a sorted query string. Preserve the same ordering in the
+    # actual request so Bybit verifies the identical payload.
+    return _signed_get(base_url, path, dict(sorted(params.items())))
 
 
 def floor_step(value: float, step: str) -> float:
@@ -189,7 +196,7 @@ def select_candidate(base_url: str) -> dict | None:
 
 
 def balances(base_url: str) -> tuple[float, float]:
-    wallet = _signed_get(
+    wallet = signed_get(
         base_url,
         "/v5/account/wallet-balance",
         {"accountType": "UNIFIED", "coin": "USDT"},
@@ -201,7 +208,7 @@ def balances(base_url: str) -> tuple[float, float]:
             if row.get("coin") == "USDT":
                 unified = float(row.get("walletBalance") or 0.0)
 
-    funding_result = _signed_get(
+    funding_result = signed_get(
         base_url,
         "/v5/asset/transfer/query-account-coins-balance",
         {"accountType": "FUND", "coin": "USDT"},
@@ -249,7 +256,7 @@ def ensure_trade_balance(base_url: str, minimum: float) -> float:
 
 def find_existing(base_url: str) -> dict | None:
     for path in ("/v5/order/realtime", "/v5/order/history"):
-        result = _signed_get(
+        result = signed_get(
             base_url,
             path,
             {"category": "spot", "orderLinkId": ORDER_LINK_ID, "limit": 1},
@@ -328,14 +335,14 @@ def execute(base_url: str, candidate: dict) -> dict:
     ack = _signed_post(base_url, "/v5/order/create", payload)
     order_id = (ack.get("result") or {}).get("orderId")
     time.sleep(1.5)
-    order_result = _signed_get(
+    order_result = signed_get(
         base_url,
         "/v5/order/realtime",
         {"category": "spot", "symbol": candidate["symbol"], "orderId": order_id},
     ).get("result") or {}
     rows = order_result.get("list") or []
     order = rows[0] if rows else {}
-    execution_result = _signed_get(
+    execution_result = signed_get(
         base_url,
         "/v5/execution/list",
         {"category": "spot", "symbol": candidate["symbol"], "orderId": order_id, "limit": 20},
@@ -413,5 +420,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        emit("ERROR", error=repr(exc)[:300])
-        raise
+        emit("ERROR", error=_safe_error(exc))
+        raise SystemExit(1)
