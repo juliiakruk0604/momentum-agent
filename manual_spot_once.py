@@ -102,6 +102,17 @@ def kline_metrics(base_url: str, symbol: str, last: float) -> dict | None:
 def select_candidate(base_url: str) -> dict | None:
     instruments = get_instruments(base_url)
     result = public_get(base_url, "/v5/market/tickers", {"category": "spot"})
+    min_amounts = sorted({
+        float((row.get("lotSizeFilter") or {}).get("minOrderAmt") or 0.0)
+        for row in instruments.values()
+        if float((row.get("lotSizeFilter") or {}).get("minOrderAmt") or 0.0) > 0
+    })
+    emit(
+        "UNIVERSE",
+        spot_usdt_instruments=len(instruments),
+        spot_tickers=len(result.get("list") or []),
+        smallest_min_order_amounts=min_amounts[:8],
+    )
     preliminary = []
     for row in result.get("list") or []:
         symbol = str(row.get("symbol") or "")
@@ -399,6 +410,8 @@ def main() -> None:
         raise RuntimeError("spot_trade_permission_missing")
 
     base_url, _api_info, _attempts = _find_authenticated_base_url()
+    unified, funding = balances(base_url)
+    emit("BALANCE", unified_usdt=unified, funding_usdt=funding)
     existing = find_existing(base_url)
     if existing:
         emit(
