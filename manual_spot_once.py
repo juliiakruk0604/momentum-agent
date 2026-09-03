@@ -18,8 +18,11 @@ from src.bybit_account import (
 )
 
 
-MAX_NOTIONAL_USDT = min(2.0, float(os.getenv("MANUAL_MAX_NOTIONAL_USDT", "2")))
+MAX_NOTIONAL_USDT = min(5.0, float(os.getenv("MANUAL_MAX_NOTIONAL_USDT", "2")))
 ORDER_LINK_ID = os.getenv("MANUAL_ORDER_ID", "cg-spot-20260903-001")[:36]
+EXECUTION_ENABLED = os.getenv("MANUAL_EXECUTION_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
 EXCLUDED_BASES = {
     "USDC", "USDE", "DAI", "FDUSD", "TUSD", "USDD", "USD1", "PYUSD",
     "EUR", "EURT", "EURI", "USDT",
@@ -437,6 +440,14 @@ def main() -> None:
         return
     candidate = select_candidate(base_url)
     if candidate is None:
+        return
+    if not EXECUTION_ENABLED:
+        emit(
+            "SCAN_ONLY",
+            symbol=candidate["symbol"],
+            max_notional_usdt=MAX_NOTIONAL_USDT,
+            note="execution requires a separate explicit enable flag",
+        )
         return
     execute(base_url, candidate)
 
