@@ -1,0 +1,34 @@
+{
+  "generated_at": 1788622463,
+  "signals": [
+    {
+      "event_key": "BNBHOLDER:1788595200",
+      "symbol": "BNBHOLDER",
+      "current_price": 0.0007562,
+      "breakout_close": 0.000739344324808306,
+      "breakout_candle_open_time": 1788595200,
+      "breakout_volume_usd": 15047.350132273752,
+      "previous_volume_usd": 4276.334217089133,
+      "volume_change_pct": 251.8749790917036,
+      "retest_candle_low": 0.000730286811937963,
+      "entry_zone": [
+        0.0007,
+        0.000733
+      ],
+      "invalidation": 0.00065,
+      "targets": [
+        0.0009,
+        0.0011,
+        0.00134
+      ],
+      "detected_at": 1788622463,
+      "token_address": "0x44440f83419de123d7d411187adb9962db017d03",
+      "pool_address": "0x258B62531e0d6C8D1E2e7fF23904FD851DEf77cA",
+      "liquidity_usd": 430082.32,
+      "dexscreener_url": "https://dexscreener.com/bsc/0x258b62531e0d6c8d1e2e7ff23904fd851def77ca",
+      "geckoterminal_ohlcv_url": "https://api.geckoterminal.com/api/v2/networks/bsc/pools/0x258B62531e0d6C8D1E2e7fF23904FD851DEf77cA/ohlcv/hour?aggregate=4&limit=8&currency=usd&token=base"
+    }
+  ],
+  "feed_errors": [],
+  "execution": "alerts_only_no_orders"
+}
