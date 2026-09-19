@@ -1,16 +1,16 @@
 {
-  "generated_at": 1789707952,
+  "generated_at": 1789799146,
   "signals": [
     {
-      "event_key": "BNBHOLDER:1789689600",
+      "event_key": "BNBHOLDER:1789776000",
       "symbol": "BNBHOLDER",
-      "current_price": 0.0007223,
-      "breakout_close": 0.000734937876385991,
-      "breakout_candle_open_time": 1789689600,
-      "breakout_volume_usd": 1483.781020534525,
-      "previous_volume_usd": 1389.7277992140457,
-      "volume_change_pct": 6.767744113176022,
-      "retest_candle_low": 0.000720488765358031,
+      "current_price": 0.0007334,
+      "breakout_close": 0.000743073832063898,
+      "breakout_candle_open_time": 1789776000,
+      "breakout_volume_usd": 3741.6221025285845,
+      "previous_volume_usd": 388.8762519564675,
+      "volume_change_pct": 862.16266323906,
+      "retest_candle_low": 0.000731002879393996,
       "entry_zone": [
         0.0007,
         0.000733
@@ -21,10 +21,10 @@
         0.0011,
         0.00134
       ],
-      "detected_at": 1789707952,
+      "detected_at": 1789799146,
       "token_address": "0x44440f83419de123d7d411187adb9962db017d03",
       "pool_address": "0x258B62531e0d6C8D1E2e7fF23904FD851DEf77cA",
-      "liquidity_usd": 416750.49,
+      "liquidity_usd": 423938.89,
       "dexscreener_url": "https://dexscreener.com/bsc/0x258b62531e0d6c8d1e2e7ff23904fd851def77ca",
       "geckoterminal_ohlcv_url": "https://api.geckoterminal.com/api/v2/networks/bsc/pools/0x258B62531e0d6C8D1E2e7fF23904FD851DEf77cA/ohlcv/hour?aggregate=4&limit=8&currency=usd&token=base"
     }
